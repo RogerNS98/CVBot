@@ -1,14 +1,15 @@
 import os
 import json
 import sqlite3
+import base64
 from io import BytesIO
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any
 from datetime import datetime
 
 import requests
-from fastapi import FastAPI, Request, Response, HTTPException
+from fastapi import FastAPI, Request, HTTPException
 
-from telegram import Update
+from telegram import Update, InputFile
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 
 from reportlab.lib.pagesizes import A4
@@ -42,9 +43,15 @@ if not MP_ACCESS_TOKEN:
 # DB
 # ----------------------------
 def db():
-    conn = sqlite3.connect(DB_PATH)
+    # check_same_thread=False ayuda en entornos async/web
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("PRAGMA journal_mode=WAL;")
+    except Exception:
+        pass
     return conn
+
 
 def init_db():
     conn = db()
@@ -75,14 +82,17 @@ def init_db():
     conn.commit()
     conn.close()
 
+
 def now_iso():
     return datetime.utcnow().isoformat()
+
 
 def get_user(tg_uid: int):
     conn = db()
     row = conn.execute("SELECT * FROM users WHERE telegram_user_id=?", (tg_uid,)).fetchone()
     conn.close()
     return row
+
 
 def upsert_user(tg_uid: int, chat_id: int, plan: str, step: str, data: dict):
     conn = db()
@@ -99,6 +109,7 @@ def upsert_user(tg_uid: int, chat_id: int, plan: str, step: str, data: dict):
     conn.commit()
     conn.close()
 
+
 def create_payment(tg_uid: int, preference_id: str, amount: int):
     conn = db()
     conn.execute("""
@@ -107,6 +118,7 @@ def create_payment(tg_uid: int, preference_id: str, amount: int):
     """, (tg_uid, preference_id, amount, now_iso(), now_iso()))
     conn.commit()
     conn.close()
+
 
 def update_payment_by_preference(preference_id: str, mp_payment_id: Optional[str], status: str):
     conn = db()
@@ -117,6 +129,7 @@ def update_payment_by_preference(preference_id: str, mp_payment_id: Optional[str
     """, (mp_payment_id, status, now_iso(), preference_id))
     conn.commit()
     conn.close()
+
 
 def latest_payment_for_user(tg_uid: int):
     conn = db()
@@ -134,9 +147,11 @@ def latest_payment_for_user(tg_uid: int):
 def _clean(s: str) -> str:
     return (s or "").strip()
 
+
 def _as_list_from_commas(text: str):
     items = [t.strip() for t in (text or "").split(",")]
     return [i for i in items if i]
+
 
 def _wrap_text(c: canvas.Canvas, text: str, x: float, y: float, max_width: float,
               leading: float = 14, font_name="Helvetica", font_size=11):
@@ -160,6 +175,7 @@ def _wrap_text(c: canvas.Canvas, text: str, x: float, y: float, max_width: float
         y -= leading
     return y
 
+
 def build_pdf_bytes(cv: dict, pro: bool) -> BytesIO:
     buf = BytesIO()
     c = canvas.Canvas(buf, pagesize=A4)
@@ -169,7 +185,16 @@ def build_pdf_bytes(cv: dict, pro: bool) -> BytesIO:
     right = width - 2.2 * cm
     y = height - 2.2 * cm
 
-    photo_bytes = cv.get("photo") if pro else None
+    # ✅ FOTO: ahora viene como base64 string en cv["photo_b64"]
+    photo_bytes = None
+    if pro:
+        b64 = (cv.get("photo_b64") or "").strip()
+        if b64:
+            try:
+                photo_bytes = base64.b64decode(b64)
+            except Exception:
+                photo_bytes = None
+
     img_size = 3.6 * cm
     img_pad = 0.9 * cm
     img_x = right - img_size
@@ -189,24 +214,24 @@ def build_pdf_bytes(cv: dict, pro: bool) -> BytesIO:
             text_right_limit = right
 
     # Header
-    y = _wrap_text(c, cv.get("name",""), left, y, max_width=(text_right_limit-left),
+    y = _wrap_text(c, cv.get("name", ""), left, y, max_width=(text_right_limit - left),
                    leading=18, font_name="Helvetica-Bold", font_size=18)
     y += 6
 
-    title = _clean(cv.get("title",""))
+    title = _clean(cv.get("title", ""))
     if title:
-        y = _wrap_text(c, title, left, y, max_width=(text_right_limit-left))
+        y = _wrap_text(c, title, left, y, max_width=(text_right_limit - left))
 
     contact_parts = []
-    if _clean(cv.get("city","")):
+    if _clean(cv.get("city", "")):
         contact_parts.append(_clean(cv["city"]))
-    if _clean(cv.get("contact","")):
+    if _clean(cv.get("contact", "")):
         contact_parts.append(_clean(cv["contact"]))
-    if pro and _clean(cv.get("linkedin","")):
+    if pro and _clean(cv.get("linkedin", "")):
         contact_parts.append(_clean(cv["linkedin"]))
 
     if contact_parts:
-        y = _wrap_text(c, " | ".join(contact_parts), left, y, max_width=(text_right_limit-left))
+        y = _wrap_text(c, " | ".join(contact_parts), left, y, max_width=(text_right_limit - left))
 
     if photo_bytes:
         safe_y = img_y - 0.8 * cm
@@ -226,10 +251,10 @@ def build_pdf_bytes(cv: dict, pro: bool) -> BytesIO:
         y -= 14
 
     # Perfil
-    profile = _clean(cv.get("profile",""))
+    profile = _clean(cv.get("profile", ""))
     if profile:
         section("Perfil")
-        y = _wrap_text(c, profile, left, y, max_width=(right-left))
+        y = _wrap_text(c, profile, left, y, max_width=(right - left))
 
     # Experiencia
     exps = cv.get("experiences", [])
@@ -239,11 +264,11 @@ def build_pdf_bytes(cv: dict, pro: bool) -> BytesIO:
             if y < 4 * cm:
                 c.showPage()
                 y = height - 2.2 * cm
-            head = " — ".join([p for p in [_clean(exp.get("role","")), _clean(exp.get("company",""))] if p])
+            head = " — ".join([p for p in [_clean(exp.get("role", "")), _clean(exp.get("company", ""))] if p])
             c.setFont("Helvetica-Bold", 11)
             c.drawString(left, y, head)
             y -= 14
-            dates = _clean(exp.get("dates",""))
+            dates = _clean(exp.get("dates", ""))
             if dates:
                 c.setFont("Helvetica-Oblique", 10)
                 c.drawString(left, y, dates)
@@ -252,7 +277,7 @@ def build_pdf_bytes(cv: dict, pro: bool) -> BytesIO:
                 b = _clean(b)
                 if not b:
                     continue
-                y = _wrap_text(c, "• " + b, left, y, max_width=(right-left))
+                y = _wrap_text(c, "• " + b, left, y, max_width=(right - left))
             y -= 6
 
     # Educación
@@ -260,38 +285,40 @@ def build_pdf_bytes(cv: dict, pro: bool) -> BytesIO:
     if edu:
         section("Educación")
         for e in edu:
-            parts = [p for p in [_clean(e.get("degree","")), _clean(e.get("place","")), _clean(e.get("dates",""))] if p]
+            parts = [p for p in [_clean(e.get("degree", "")), _clean(e.get("place", "")), _clean(e.get("dates", ""))] if p]
             if not parts:
                 continue
-            y = _wrap_text(c, " — ".join(parts), left, y, max_width=(right-left))
+            y = _wrap_text(c, " — ".join(parts), left, y, max_width=(right - left))
             y -= 2
 
     # Skills
     skills = cv.get("skills", [])
     if skills:
         section("Habilidades")
-        y = _wrap_text(c, ", ".join(skills), left, y, max_width=(right-left))
+        y = _wrap_text(c, ", ".join(skills), left, y, max_width=(right - left))
 
     # Idiomas
     langs = cv.get("languages", [])
     if langs:
         section("Idiomas")
-        y = _wrap_text(c, ", ".join(langs), left, y, max_width=(right-left))
+        y = _wrap_text(c, ", ".join(langs), left, y, max_width=(right - left))
 
     c.showPage()
     c.save()
     buf.seek(0)
     return buf
 
+
 def profile_free(data: dict) -> str:
-    title = _clean(data.get("title","")) or "Perfil laboral"
-    a = _clean(data.get("profile_a",""))
+    title = _clean(data.get("title", "")) or "Perfil laboral"
+    a = _clean(data.get("profile_a", ""))
     return f"{title}. Experiencia en {a}." if a else f"{title}."
 
+
 def profile_pro(data: dict) -> str:
-    title = _clean(data.get("title","")) or "Perfil laboral"
-    a = _clean(data.get("profile_a",""))
-    b = _clean(data.get("profile_b",""))
+    title = _clean(data.get("title", "")) or "Perfil laboral"
+    a = _clean(data.get("profile_a", ""))
+    b = _clean(data.get("profile_b", ""))
     base = f"{title} "
     base += f"con experiencia en {a}. " if a else "con experiencia comprobable. "
     if b:
@@ -304,11 +331,6 @@ def profile_pro(data: dict) -> str:
 # Mercado Pago
 # ----------------------------
 def mp_create_preference(tg_uid: int) -> Dict[str, Any]:
-    """
-    Crea una Preference de Checkout Pro para ARS 1500.
-    Requiere webhook para saber cuando queda approved.
-    Docs: create-payment-preference. :contentReference[oaicite:1]{index=1}
-    """
     url = "https://api.mercadopago.com/checkout/preferences"
     headers = {"Authorization": f"Bearer {MP_ACCESS_TOKEN}"}
 
@@ -320,7 +342,7 @@ def mp_create_preference(tg_uid: int) -> Dict[str, Any]:
             "unit_price": PRO_PRICE_ARS
         }],
         "external_reference": str(tg_uid),
-        "notification_url": f"{PUBLIC_BASE_URL}/mp/webhook",  # MP va a pegar acá
+        "notification_url": f"{PUBLIC_BASE_URL}/mp/webhook",
         "auto_return": "approved",
         "back_urls": {
             "success": f"{PUBLIC_BASE_URL}/ok",
@@ -333,6 +355,7 @@ def mp_create_preference(tg_uid: int) -> Dict[str, Any]:
     if r.status_code not in (200, 201):
         raise RuntimeError(f"MP preference error {r.status_code}: {r.text}")
     return r.json()
+
 
 def mp_get_payment(payment_id: str) -> Dict[str, Any]:
     url = f"https://api.mercadopago.com/v1/payments/{payment_id}"
@@ -362,6 +385,7 @@ WELCOME = (
     "👉 Escribí: GRATIS o PRO"
 )
 
+
 def default_data():
     return {
         "name": "",
@@ -371,12 +395,13 @@ def default_data():
         "title": "",
         "profile_a": "",
         "profile_b": "",
-        "photo": None,
+        "photo_b64": "",  # ✅ base64 string (JSON-friendly)
         "experiences": [],
         "education": [],
         "skills": [],
         "languages": [],
     }
+
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tg_uid = update.effective_user.id
@@ -384,8 +409,10 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     upsert_user(tg_uid, chat_id, plan="none", step="choose_plan", data=default_data())
     await update.message.reply_text(WELCOME)
 
+
 async def cmd_cv(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await cmd_start(update, context)
+
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tg_uid = update.effective_user.id
@@ -398,6 +425,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if pay:
         msg += f"\nPago: {pay['status']} (pref {pay['preference_id']})"
     await update.message.reply_text(msg)
+
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tg_uid = update.effective_user.id
@@ -456,7 +484,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if plan == "pro" and step == "linkedin":
-        data["linkedin"] = "" if text.lower() in ("saltear","skip","no","n/a","-","x") else text
+        data["linkedin"] = "" if text.lower() in ("saltear", "skip", "no", "n/a", "-", "x") else text
         step = "photo_wait"
         upsert_user(tg_uid, chat_id, plan, step, data)
         await update.message.reply_text("📸 Mandame tu FOTO ahora (tipo selfie carnet).")
@@ -529,7 +557,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # educación (simple)
     if step == "edu_degree":
-        if text.lower() in ("saltear","skip","no","n/a","-","x"):
+        if text.lower() in ("saltear", "skip", "no", "n/a", "-", "x"):
             step = "skills"
             upsert_user(tg_uid, chat_id, plan, step, data)
             await update.message.reply_text("🛠️ Habilidades (coma) o SALTEAR")
@@ -543,14 +571,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if step == "edu_place":
         if "_cur_edu" not in data:
             data["_cur_edu"] = {"degree": ""}
-        data["_cur_edu"]["place"] = "" if text.lower() in ("saltear","skip","no","n/a","-","x") else text
+        data["_cur_edu"]["place"] = "" if text.lower() in ("saltear", "skip", "no", "n/a", "-", "x") else text
         step = "edu_dates"
         upsert_user(tg_uid, chat_id, plan, step, data)
         await update.message.reply_text("🗓️ Años/fechas (o SALTEAR)")
         return
 
     if step == "edu_dates":
-        data["_cur_edu"]["dates"] = "" if text.lower() in ("saltear","skip","no","n/a","-","x") else text
+        data["_cur_edu"]["dates"] = "" if text.lower() in ("saltear", "skip", "no", "n/a", "-", "x") else text
         data["education"].append(data["_cur_edu"])
         data["_cur_edu"] = {}
         step = "skills"
@@ -559,14 +587,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if step == "skills":
-        data["skills"] = [] if text.lower() in ("saltear","skip","no","n/a","-","x") else _as_list_from_commas(text)
+        data["skills"] = [] if text.lower() in ("saltear", "skip", "no", "n/a", "-", "x") else _as_list_from_commas(text)
         step = "languages"
         upsert_user(tg_uid, chat_id, plan, step, data)
         await update.message.reply_text("🌎 Idiomas (coma) o SALTEAR")
         return
 
     if step == "languages":
-        data["languages"] = [] if text.lower() in ("saltear","skip","no","n/a","-","x") else _as_list_from_commas(text)
+        data["languages"] = [] if text.lower() in ("saltear", "skip", "no", "n/a", "-", "x") else _as_list_from_commas(text)
 
         # FREE: entrega inmediata
         if plan == "free":
@@ -577,8 +605,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "skills": data["skills"], "languages": data["languages"]
             }
             pdf = build_pdf_bytes(cv, pro=False)
-            await update.message.reply_document(document=pdf, filename=f"CV_FREE_{data['name'].replace(' ','_')}.pdf",
-                                                caption="🆓 Acá tenés tu CV GRATIS.")
+            pdf.seek(0)
+            await update.message.reply_document(
+                document=InputFile(pdf, filename=f"CV_FREE_{data['name'].replace(' ', '_')}.pdf"),
+                caption="🆓 Acá tenés tu CV GRATIS."
+            )
             upsert_user(tg_uid, chat_id, plan="none", step="choose_plan", data=default_data())
             await update.message.reply_text("Si querés otro: /cv")
             return
@@ -621,6 +652,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not u:
         await update.message.reply_text("Primero elegí PRO con /cv.")
         return
+
     plan = u["plan"]
     step = u["step"]
     data = json.loads(u["data_json"])
@@ -632,11 +664,14 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     photo = update.message.photo[-1]
     file = await photo.get_file()
     photo_bytes = await file.download_as_bytearray()
-    data["photo"] = bytes(photo_bytes)
+
+    # ✅ Guardar como base64 (string) para poder serializar a JSON
+    data["photo_b64"] = base64.b64encode(bytes(photo_bytes)).decode("utf-8")
 
     step = "title"
     upsert_user(tg_uid, chat_id, plan, step, data)
     await update.message.reply_text("✅ Foto guardada.\n🎯 ¿A qué te dedicás / qué trabajo buscás? (Ej: Electricista)")
+
 
 # commands
 app_tg.add_handler(CommandHandler("start", cmd_start))
@@ -651,39 +686,51 @@ app_tg.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 # ----------------------------
 api = FastAPI()
 
+
 @api.on_event("startup")
 async def _startup():
     init_db()
 
-    # set Telegram webhook once at startup (idempotent)
-    # webhook url includes a secret path segment to avoid random hits
     if not TELEGRAM_WEBHOOK_SECRET:
         raise RuntimeError("Falta TELEGRAM_WEBHOOK_SECRET")
+
     wh_url = f"{PUBLIC_BASE_URL}/telegram/webhook/{TELEGRAM_WEBHOOK_SECRET}"
-    await app_tg.bot.set_webhook(url=wh_url, drop_pending_updates=True)
+
     await app_tg.initialize()
+    await app_tg.bot.set_webhook(url=wh_url, drop_pending_updates=True)
     await app_tg.start()
+
 
 @api.on_event("shutdown")
 async def _shutdown():
     await app_tg.stop()
     await app_tg.shutdown()
 
+
+@api.get("/")
+async def root():
+    return {"ok": True, "message": "CVBot online. Usá /health"}
+
+
 @api.get("/health")
 async def health():
     return {"ok": True}
+
 
 @api.get("/ok")
 async def ok():
     return {"ok": True}
 
+
 @api.get("/fail")
 async def fail():
     return {"ok": False}
 
+
 @api.get("/pending")
 async def pending():
     return {"pending": True}
+
 
 # Telegram webhook receiver
 @api.post("/telegram/webhook/{secret}")
@@ -696,59 +743,40 @@ async def telegram_webhook(secret: str, request: Request):
     await app_tg.process_update(update)
     return {"ok": True}
 
+
 # Mercado Pago webhook receiver
 @api.post("/mp/webhook")
 async def mp_webhook(request: Request):
-    """
-    MP notifica eventos y trae IDs. Se recomienda validar consultando el payment.
-    Docs: notifications/webhooks. :contentReference[oaicite:2]{index=2}
-    """
     payload = await request.json()
 
-    # Mercado Pago puede mandar distintos formatos (topic/type + data.id)
-    # Intentamos extraer payment_id
     payment_id = None
-    preference_id = None
 
-    # casos comunes:
-    # { "type":"payment", "data":{"id":"123"} }
     if isinstance(payload, dict):
         if payload.get("type") == "payment" and isinstance(payload.get("data"), dict):
             payment_id = str(payload["data"].get("id") or "")
-        # { "topic":"payment", "id":"123" }
         if not payment_id and payload.get("topic") == "payment":
             payment_id = str(payload.get("id") or "")
-        # a veces viene "data.id" igual
         if not payment_id and isinstance(payload.get("data"), dict) and payload["data"].get("id"):
             payment_id = str(payload["data"]["id"])
 
     if not payment_id:
-        # no rompemos: respondemos ok para que MP no reintente infinito
         return {"ok": True, "ignored": True}
 
-    # consultamos payment para confirmar estado real
     pay = mp_get_payment(payment_id)
     status = pay.get("status")  # approved / pending / rejected...
-    preference_id = pay.get("order", {}).get("id")  # no siempre
-    # En MP, preference_id suele estar en pay["metadata"] o "additional_info"
-    # y también en pay.get("external_reference") para vincular usuario:
-    external_ref = str(pay.get("external_reference") or "").strip()
 
-    # Vinculación por external_reference (lo seteamos como tg_uid)
+    external_ref = str(pay.get("external_reference") or "").strip()
     if not external_ref.isdigit():
         return {"ok": True, "ignored": True}
 
     tg_uid = int(external_ref)
 
-    # buscamos el último payment del usuario y lo marcamos
     last = latest_payment_for_user(tg_uid)
     if not last:
         return {"ok": True, "ignored": True}
 
-    # actualizamos estado
     update_payment_by_preference(last["preference_id"], payment_id, status or "unknown")
 
-    # si approved -> enviar PDF PRO automático
     if status == "approved":
         u = get_user(tg_uid)
         if not u:
@@ -759,20 +787,21 @@ async def mp_webhook(request: Request):
 
         cv = {
             "name": data["name"], "city": data["city"], "contact": data["contact"],
-            "linkedin": data.get("linkedin",""),
+            "linkedin": data.get("linkedin", ""),
             "title": data["title"],
             "profile": data.get("profile") or profile_pro(data),
-            "photo": data.get("photo"),
+            "photo_b64": data.get("photo_b64", ""),
             "experiences": data["experiences"], "education": data["education"],
             "skills": data["skills"], "languages": data["languages"]
         }
+
         pdf = build_pdf_bytes(cv, pro=True)
-        filename = f"CV_PRO_{data['name'].replace(' ','_')}.pdf"
+        pdf.seek(0)
+        filename = f"CV_PRO_{data['name'].replace(' ', '_')}.pdf"
 
         await app_tg.bot.send_message(chat_id=chat_id, text="✅ Pago confirmado. Te envío tu CV PRO 😎")
-        await app_tg.bot.send_document(chat_id=chat_id, document=pdf, filename=filename)
+        await app_tg.bot.send_document(chat_id=chat_id, document=InputFile(pdf, filename=filename))
 
-        # reseteamos sesión
         upsert_user(tg_uid, chat_id, plan="none", step="choose_plan", data=default_data())
         await app_tg.bot.send_message(chat_id=chat_id, text="Si querés hacer otro: /cv")
 
