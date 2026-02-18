@@ -640,47 +640,49 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    if step == "waiting_payment":
-    # ✅ MODO TEST (controlado por env var ENABLE_TEST_PAYMENTS)
-    if ENABLE_TEST_PAYMENTS and text.strip().lower() in ("test", "aprobar", "approve"):
-        u = get_user(tg_uid)
-        if not u:
-            await update.message.reply_text("No hay sesión. Usá /cv")
+        if step == "waiting_payment":
+        # ✅ MODO TEST (controlado por env var ENABLE_TEST_PAYMENTS)
+        if ENABLE_TEST_PAYMENTS and text.strip().lower() in ("test", "aprobar", "approve"):
+            u = get_user(tg_uid)
+            if not u:
+                await update.message.reply_text("No hay sesión. Usá /cv")
+                return
+
+            data_db = json.loads(u["data_json"])
+
+            cv = {
+                "name": data_db["name"],
+                "city": data_db["city"],
+                "contact": data_db["contact"],
+                "linkedin": data_db.get("linkedin", ""),
+                "title": data_db["title"],
+                "profile": data_db.get("profile") or profile_pro(data_db),
+                "photo_b64": data_db.get("photo_b64", ""),
+                "experiences": data_db["experiences"],
+                "education": data_db["education"],
+                "skills": data_db["skills"],
+                "languages": data_db["languages"],
+            }
+
+            pdf = build_pdf_bytes(cv, pro=True)
+            pdf.seek(0)
+            filename = f"CV_PRO_{data_db['name'].replace(' ', '_')}.pdf"
+
+            await update.message.reply_text("✅ TEST: pago simulado como aprobado. Te envío tu CV PRO 😎")
+            await update.message.reply_document(document=InputFile(pdf, filename=filename))
+
+            upsert_user(tg_uid, chat_id, plan="none", step="choose_plan", data=default_data())
+            await update.message.reply_text("Si querés hacer otro: /cv")
             return
 
-        data = json.loads(u["data_json"])
-        cv = {
-            "name": data["name"],
-            "city": data["city"],
-            "contact": data["contact"],
-            "linkedin": data.get("linkedin", ""),
-            "title": data["title"],
-            "profile": data.get("profile") or profile_pro(data),
-            "photo_b64": data.get("photo_b64", ""),
-            "experiences": data["experiences"],
-            "education": data["education"],
-            "skills": data["skills"],
-            "languages": data["languages"]
-        }
-
-        pdf = build_pdf_bytes(cv, pro=True)
-        pdf.seek(0)
-        filename = f"CV_PRO_{data['name'].replace(' ', '_')}.pdf"
-
-        await update.message.reply_text("✅ TEST: pago simulado como aprobado. Te envío tu CV PRO 😎")
-        await update.message.reply_document(document=InputFile(pdf, filename=filename))
-
-        upsert_user(tg_uid, chat_id, plan="none", step="choose_plan", data=default_data())
-        await update.message.reply_text("Si querés hacer otro: /cv")
+        msg = "⏳ Estoy esperando la confirmación del pago. Si ya pagaste, en breve te llega."
+        if ENABLE_TEST_PAYMENTS:
+            msg += "\n🧪 (Modo test activo: escribí TEST para simular pago aprobado)"
+        await update.message.reply_text(msg)
         return
 
-    msg = "⏳ Estoy esperando la confirmación del pago. Si ya pagaste, en breve te llega."
-    if ENABLE_TEST_PAYMENTS:
-        msg += "\n🧪 (Modo test activo: escribí TEST para simular pago aprobado)"
-    await update.message.reply_text(msg)
-    return
+    await update.message.reply_text("Usá /cv para empezar de nuevo.")
 
-await update.message.reply_text("Usá /cv para empezar de nuevo.")
 
 
 
