@@ -16,6 +16,7 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import cm
 from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
+from reportlab.lib import colors
 
 
 # ----------------------------
@@ -24,14 +25,29 @@ from reportlab.lib.utils import ImageReader
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_WEBHOOK_SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip()  # una string random
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").strip()  # ej: https://tuapp.onrender.com
-ENABLE_TEST_PAYMENTS = os.getenv("ENABLE_TEST_PAYMENTS", "0").strip() == "1"
 
+ENABLE_TEST_PAYMENTS = os.getenv("ENABLE_TEST_PAYMENTS", "0").strip() == "1"
 
 MP_ACCESS_TOKEN = os.getenv("MP_ACCESS_TOKEN", "").strip()
 MP_WEBHOOK_SECRET = os.getenv("MP_WEBHOOK_SECRET", "").strip()  # opcional (si lo configurás)
 PRO_PRICE_ARS = int(os.getenv("PRO_PRICE_ARS", "1500"))
 
 DB_PATH = os.getenv("DB_PATH", "app.db")
+
+# ⚠️ Seguridad: si querés reset-db, poné un secreto
+ADMIN_SECRET = os.getenv("ADMIN_SECRET", "").strip()
+
+# Limits (FREE vs PRO)
+FREE_MAX_EXPS = 1
+FREE_MAX_EDU = 1
+FREE_MAX_SKILLS = 10
+FREE_MAX_LANGS = 4
+
+PRO_MAX_EXPS = 3
+PRO_MAX_EDU = 2
+PRO_MAX_SKILLS = 20
+PRO_MAX_LANGS = 6
+PRO_MAX_CERTS = 4
 
 if not TELEGRAM_BOT_TOKEN:
     raise SystemExit("Falta TELEGRAM_BOT_TOKEN")
@@ -45,7 +61,6 @@ if not MP_ACCESS_TOKEN:
 # DB
 # ----------------------------
 def db():
-    # check_same_thread=False ayuda en entornos async/web
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     try:
@@ -144,7 +159,7 @@ def latest_payment_for_user(tg_uid: int):
 
 
 # ----------------------------
-# PDF helpers
+# Helpers
 # ----------------------------
 def _clean(s: str) -> str:
     return (s or "").strip()
@@ -155,6 +170,24 @@ def _as_list_from_commas(text: str):
     return [i for i in items if i]
 
 
+def _is_yes(text: str) -> bool:
+    t = _clean(text).lower()
+    return t in ("si", "sí", "s", "yes", "y", "ok", "dale")
+
+
+def _is_no(text: str) -> bool:
+    t = _clean(text).lower()
+    return t in ("no", "n", "nop", "cancel", "stop")
+
+
+def _is_skip(text: str) -> bool:
+    t = _clean(text).lower()
+    return t in ("saltear", "skip", "no", "n/a", "-", "x", "ninguno", "ninguna")
+
+
+# ----------------------------
+# PDF helpers (FREE vs PRO)
+# ----------------------------
 def _wrap_text(c: canvas.Canvas, text: str, x: float, y: float, max_width: float,
               leading: float = 14, font_name="Helvetica", font_size=11):
     text = (text or "").strip()
@@ -178,16 +211,36 @@ def _wrap_text(c: canvas.Canvas, text: str, x: float, y: float, max_width: float
     return y
 
 
+def _draw_chip(c: canvas.Canvas, x: float, y: float, text: str, font_size=9, pad_x=6, pad_y=3):
+    """
+    Dibuja una "chip" simple (PRO).
+    Devuelve (w, h) en puntos.
+    """
+    text = _clean(text)
+    if not text:
+        return 0, 0
+    c.setFont("Helvetica", font_size)
+    tw = c.stringWidth(text, "Helvetica", font_size)
+    w = tw + (pad_x * 2)
+    h = font_size + (pad_y * 2)
+    c.setFillColor(colors.whitesmoke)
+    c.setStrokeColor(colors.lightgrey)
+    c.roundRect(x, y - h + 2, w, h, 6, stroke=1, fill=1)
+    c.setFillColor(colors.black)
+    c.drawString(x + pad_x, y - h + pad_y + 2, text)
+    return w, h
+
+
 def build_pdf_bytes(cv: dict, pro: bool) -> BytesIO:
     buf = BytesIO()
     c = canvas.Canvas(buf, pagesize=A4)
     width, height = A4
 
-    left = 2.2 * cm
-    right = width - 2.2 * cm
-    y = height - 2.2 * cm
+    left = 2.0 * cm
+    right = width - 2.0 * cm
+    y = height - 2.0 * cm
 
-    # ✅ FOTO: ahora viene como base64 string en cv["photo_b64"]
+    # Foto (PRO)
     photo_bytes = None
     if pro:
         b64 = (cv.get("photo_b64") or "").strip()
@@ -197,33 +250,58 @@ def build_pdf_bytes(cv: dict, pro: bool) -> BytesIO:
             except Exception:
                 photo_bytes = None
 
-    img_size = 3.6 * cm
+    # Header layout
+    img_size = 3.8 * cm if pro else 0
     img_pad = 0.9 * cm
     img_x = right - img_size
-    img_y = (height - 2.2 * cm) - img_size
-
+    img_y = (height - 2.0 * cm) - img_size
     text_right_limit = right
-    if photo_bytes:
+
+    # Decorative line (PRO)
+    if pro:
+        c.setStrokeColor(colors.black)
+        c.setLineWidth(2.2)
+        c.line(left, height - 1.65 * cm, right, height - 1.65 * cm)
+
+    if pro and photo_bytes:
         text_right_limit = right - img_size - img_pad
         try:
             img_reader = ImageReader(BytesIO(photo_bytes))
-            c.drawImage(img_reader, img_x, img_y, width=img_size, height=img_size,
-                        preserveAspectRatio=True, anchor='c', mask="auto")
-            c.setLineWidth(0.6)
+            c.drawImage(
+                img_reader, img_x, img_y,
+                width=img_size, height=img_size,
+                preserveAspectRatio=True, anchor='c', mask="auto"
+            )
+            c.setLineWidth(0.8)
+            c.setStrokeColor(colors.black)
             c.rect(img_x, img_y, img_size, img_size)
         except Exception:
             photo_bytes = None
             text_right_limit = right
 
-    # Header
-    y = _wrap_text(c, cv.get("name", ""), left, y, max_width=(text_right_limit - left),
-                   leading=18, font_name="Helvetica-Bold", font_size=18)
+    # Name
+    name = cv.get("name", "")
+    y = _wrap_text(
+        c, name, left, y,
+        max_width=(text_right_limit - left),
+        leading=20 if pro else 18,
+        font_name="Helvetica-Bold",
+        font_size=20 if pro else 18
+    )
     y += 6
 
+    # Title
     title = _clean(cv.get("title", ""))
     if title:
-        y = _wrap_text(c, title, left, y, max_width=(text_right_limit - left))
+        y = _wrap_text(
+            c, title, left, y,
+            max_width=(text_right_limit - left),
+            leading=14,
+            font_name="Helvetica",
+            font_size=12 if pro else 11
+        )
 
+    # Contact
     contact_parts = []
     if _clean(cv.get("city", "")):
         contact_parts.append(_clean(cv["city"]))
@@ -231,24 +309,40 @@ def build_pdf_bytes(cv: dict, pro: bool) -> BytesIO:
         contact_parts.append(_clean(cv["contact"]))
     if pro and _clean(cv.get("linkedin", "")):
         contact_parts.append(_clean(cv["linkedin"]))
-
     if contact_parts:
-        y = _wrap_text(c, " | ".join(contact_parts), left, y, max_width=(text_right_limit - left))
+        c.setFillColor(colors.black)
+        y = _wrap_text(
+            c, " | ".join(contact_parts), left, y,
+            max_width=(text_right_limit - left),
+            leading=13,
+            font_name="Helvetica-Oblique" if pro else "Helvetica",
+            font_size=10 if pro else 10
+        )
 
-    if photo_bytes:
-        safe_y = img_y - 0.8 * cm
+    if pro and photo_bytes:
+        safe_y = img_y - 0.9 * cm
         if y > safe_y:
             y = safe_y
 
-    y -= 6
+    y -= 8
+
+    def new_page_if_needed(min_y=3.0 * cm):
+        nonlocal y
+        if y < min_y:
+            c.showPage()
+            # reset
+            y = height - 2.0 * cm
 
     def section(title_txt: str):
         nonlocal y
-        y -= 8
-        c.setFont("Helvetica-Bold", 12)
+        new_page_if_needed(4.0 * cm)
+        y -= 10
+        c.setFillColor(colors.black)
+        c.setFont("Helvetica-Bold", 12 if pro else 12)
         c.drawString(left, y, title_txt.upper())
-        y -= 8
-        c.setLineWidth(0.8)
+        y -= 7
+        c.setLineWidth(0.7 if pro else 0.8)
+        c.setStrokeColor(colors.black if pro else colors.black)
         c.line(left, y, right, y)
         y -= 14
 
@@ -256,16 +350,15 @@ def build_pdf_bytes(cv: dict, pro: bool) -> BytesIO:
     profile = _clean(cv.get("profile", ""))
     if profile:
         section("Perfil")
-        y = _wrap_text(c, profile, left, y, max_width=(right - left))
+        y = _wrap_text(c, profile, left, y, max_width=(right - left), leading=14, font_name="Helvetica", font_size=11)
+        y -= 2
 
     # Experiencia
     exps = cv.get("experiences", [])
     if exps:
         section("Experiencia")
         for exp in exps:
-            if y < 4 * cm:
-                c.showPage()
-                y = height - 2.2 * cm
+            new_page_if_needed()
             head = " — ".join([p for p in [_clean(exp.get("role", "")), _clean(exp.get("company", ""))] if p])
             c.setFont("Helvetica-Bold", 11)
             c.drawString(left, y, head)
@@ -275,11 +368,12 @@ def build_pdf_bytes(cv: dict, pro: bool) -> BytesIO:
                 c.setFont("Helvetica-Oblique", 10)
                 c.drawString(left, y, dates)
                 y -= 12
-            for b in exp.get("bullets", []):
+            bullets = exp.get("bullets", []) or []
+            for b in bullets:
                 b = _clean(b)
                 if not b:
                     continue
-                y = _wrap_text(c, "• " + b, left, y, max_width=(right - left))
+                y = _wrap_text(c, "• " + b, left, y, max_width=(right - left), leading=13, font_name="Helvetica", font_size=10.5)
             y -= 6
 
     # Educación
@@ -287,23 +381,51 @@ def build_pdf_bytes(cv: dict, pro: bool) -> BytesIO:
     if edu:
         section("Educación")
         for e in edu:
+            new_page_if_needed()
             parts = [p for p in [_clean(e.get("degree", "")), _clean(e.get("place", "")), _clean(e.get("dates", ""))] if p]
             if not parts:
                 continue
-            y = _wrap_text(c, " — ".join(parts), left, y, max_width=(right - left))
+            c.setFont("Helvetica", 11)
+            y = _wrap_text(c, " — ".join(parts), left, y, max_width=(right - left), leading=13, font_name="Helvetica", font_size=11)
             y -= 2
 
+    # Certificaciones / Cursos (solo PRO)
+    certs = cv.get("certs", []) if pro else []
+    if pro and certs:
+        section("Cursos / Certificaciones")
+        for it in certs:
+            new_page_if_needed()
+            y = _wrap_text(c, f"• {it}", left, y, max_width=(right - left), leading=13, font_name="Helvetica", font_size=11)
+        y -= 2
+
     # Skills
-    skills = cv.get("skills", [])
+    skills = cv.get("skills", []) or []
     if skills:
         section("Habilidades")
-        y = _wrap_text(c, ", ".join(skills), left, y, max_width=(right - left))
+        if pro:
+            # chips en filas
+            x = left
+            line_y = y
+            for sk in skills:
+                w, h = _draw_chip(c, x, line_y, sk, font_size=9)
+                if w <= 0:
+                    continue
+                if x + w > right:
+                    # nueva fila
+                    line_y -= (h + 6)
+                    x = left
+                    new_page_if_needed(min_y=3.2 * cm)
+                _draw_chip(c, x, line_y, sk, font_size=9)
+                x += (w + 6)
+            y = line_y - 18
+        else:
+            y = _wrap_text(c, ", ".join(skills), left, y, max_width=(right - left), leading=14, font_name="Helvetica", font_size=11)
 
     # Idiomas
-    langs = cv.get("languages", [])
+    langs = cv.get("languages", []) or []
     if langs:
         section("Idiomas")
-        y = _wrap_text(c, ", ".join(langs), left, y, max_width=(right - left))
+        y = _wrap_text(c, ", ".join(langs), left, y, max_width=(right - left), leading=14, font_name="Helvetica", font_size=11)
 
     c.showPage()
     c.save()
@@ -311,22 +433,49 @@ def build_pdf_bytes(cv: dict, pro: bool) -> BytesIO:
     return buf
 
 
+# ----------------------------
+# Copy / textos (FREE vs PRO)
+# ----------------------------
 def profile_free(data: dict) -> str:
     title = _clean(data.get("title", "")) or "Perfil laboral"
     a = _clean(data.get("profile_a", ""))
-    return f"{title}. Experiencia en {a}." if a else f"{title}."
+    # Cortito a propósito
+    if a:
+        return f"{title}. Experiencia en {a}."
+    return f"{title}."
 
 
 def profile_pro(data: dict) -> str:
     title = _clean(data.get("title", "")) or "Perfil laboral"
     a = _clean(data.get("profile_a", ""))
     b = _clean(data.get("profile_b", ""))
-    base = f"{title} "
-    base += f"con experiencia en {a}. " if a else "con experiencia comprobable. "
+    strengths = _clean(data.get("strengths", ""))  # opcional
+    base = f"{title}. "
+    if a:
+        base += f"Experiencia en {a}. "
+    if strengths:
+        base += f"Fortalezas: {strengths}. "
     if b:
         base += f"Busco {b}. "
-    base += "Enfoque en responsabilidad, prolijidad y resultados."
+    base += "Enfoque en prolijidad, responsabilidad y resultados medibles."
     return base.strip()
+
+
+def _rewrite_bullets_pro(bullets):
+    """
+    Reescritura simple para que suenen más PRO sin IA externa.
+    """
+    out = []
+    for b in bullets or []:
+        t = _clean(b)
+        if not t:
+            continue
+        # Capitalizar + quitar punto duplicado
+        t = t[0].upper() + t[1:] if len(t) > 1 else t.upper()
+        if not t.endswith("."):
+            t += "."
+        out.append(t)
+    return out
 
 
 # ----------------------------
@@ -338,7 +487,7 @@ def mp_create_preference(tg_uid: int) -> Dict[str, Any]:
 
     body = {
         "items": [{
-            "title": "CV PRO (foto + ATS + presentación)",
+            "title": "CV PRO (foto + diseño premium + ATS)",
             "quantity": 1,
             "currency_id": "ARS",
             "unit_price": PRO_PRICE_ARS
@@ -374,17 +523,17 @@ def mp_get_payment(payment_id: str) -> Dict[str, Any]:
 app_tg = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
 WELCOME = (
-    "👋 Bienvenido a CVBot\n\n"
-    "Elegí una opción:\n\n"
-    "🆓 CV GRATIS\n"
-    "• PDF básico\n"
+    "👋 Bienvenido a *CVBot*\n\n"
+    "Elegí un plan:\n\n"
+    "🆓 *CV GRATIS*\n"
+    "• PDF simple y prolijo\n"
     "• Sin foto\n"
-    "• Sin optimización PRO\n\n"
-    f"💎 CV PRO – ARS {PRO_PRICE_ARS}\n"
-    "• Foto de perfil\n"
-    "• Mejor redacción / más ATS-friendly\n"
-    "• Mejor presentación\n\n"
-    "👉 Escribí: GRATIS o PRO"
+    "• 1 experiencia + 1 educación\n\n"
+    f"💎 *CV PRO* – ARS {PRO_PRICE_ARS}\n"
+    "• Foto + diseño premium\n"
+    "• Redacción más profesional (ATS-friendly)\n"
+    "• Hasta 3 experiencias + cursos/certificaciones\n\n"
+    "👉 Escribí: *GRATIS* o *PRO*"
 )
 
 
@@ -396,12 +545,19 @@ def default_data():
         "linkedin": "",
         "title": "",
         "profile_a": "",
+        "strengths": "",     # PRO
         "profile_b": "",
-        "photo_b64": "",  # ✅ base64 string (JSON-friendly)
+        "photo_b64": "",
+
         "experiences": [],
         "education": [],
+        "certs": [],         # PRO
+
         "skills": [],
         "languages": [],
+
+        "_cur_exp": {},
+        "_cur_edu": {},
     }
 
 
@@ -409,7 +565,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tg_uid = update.effective_user.id
     chat_id = update.effective_chat.id
     upsert_user(tg_uid, chat_id, plan="none", step="choose_plan", data=default_data())
-    await update.message.reply_text(WELCOME)
+    await update.message.reply_text(WELCOME, parse_mode="Markdown")
 
 
 async def cmd_cv(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -429,6 +585,16 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg)
 
 
+async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = (
+        "Comandos:\n"
+        "• /cv → empezar\n"
+        "• /status → ver en qué paso estás\n\n"
+        "Tip: si elegís PRO, vas a poder cargar foto y hacer un CV más completo."
+    )
+    await update.message.reply_text(msg)
+
+
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tg_uid = update.effective_user.id
     chat_id = update.effective_chat.id
@@ -437,7 +603,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = get_user(tg_uid)
     if not u:
         upsert_user(tg_uid, chat_id, plan="none", step="choose_plan", data=default_data())
-        await update.message.reply_text(WELCOME)
+        await update.message.reply_text(WELCOME, parse_mode="Markdown")
         return
 
     plan = u["plan"]
@@ -450,17 +616,20 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if t in ("gratis", "free"):
             plan = "free"
             step = "name"
-            await update.message.reply_text("🆓 Elegiste GRATIS.\n👤 Nombre y apellido?")
-        elif t in ("pro", "premium"):
+            upsert_user(tg_uid, chat_id, plan, step, data)
+            await update.message.reply_text("🆓 Elegiste *GRATIS*.\n\n👤 Nombre y apellido?", parse_mode="Markdown")
+            return
+        if t in ("pro", "premium"):
             plan = "pro"
             step = "name"
-            await update.message.reply_text("💎 Elegiste PRO.\n👤 Nombre y apellido?")
-        else:
-            await update.message.reply_text("Escribí GRATIS o PRO.")
-        upsert_user(tg_uid, chat_id, plan, step, data)
+            upsert_user(tg_uid, chat_id, plan, step, data)
+            await update.message.reply_text("💎 Elegiste *PRO*.\n\n👤 Nombre y apellido?", parse_mode="Markdown")
+            return
+
+        await update.message.reply_text("Escribí *GRATIS* o *PRO*.", parse_mode="Markdown")
         return
 
-    # preguntas comunes
+    # datos base
     if step == "name":
         data["name"] = text
         step = "city"
@@ -480,37 +649,52 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         step = "linkedin" if plan == "pro" else "title"
         upsert_user(tg_uid, chat_id, plan, step, data)
         if plan == "pro":
-            await update.message.reply_text("🔗 Link LinkedIn/portfolio (o SALTEAR):")
+            await update.message.reply_text("🔗 Link LinkedIn/portfolio (o *SALTEAR*):", parse_mode="Markdown")
         else:
             await update.message.reply_text("🎯 ¿A qué te dedicás / qué trabajo buscás? (Ej: Electricista)")
         return
 
     if plan == "pro" and step == "linkedin":
-        data["linkedin"] = "" if text.lower() in ("saltear", "skip", "no", "n/a", "-", "x") else text
+        data["linkedin"] = "" if _is_skip(text) else text
         step = "photo_wait"
         upsert_user(tg_uid, chat_id, plan, step, data)
-        await update.message.reply_text("📸 Mandame tu FOTO ahora (tipo selfie carnet).")
+        await update.message.reply_text(
+            "📸 Mandame tu *FOTO* ahora (tipo selfie carnet).\n\n"
+            "Tip: fondo claro, sin filtros.",
+            parse_mode="Markdown"
+        )
         return
 
     if step == "title":
         data["title"] = text
         step = "profile_a"
         upsert_user(tg_uid, chat_id, plan, step, data)
-        await update.message.reply_text("🧠 ¿Qué sabés hacer bien? (1–2 cosas)")
+        if plan == "pro":
+            await update.message.reply_text("🧠 ¿En qué tenés experiencia? (1–2 cosas)\nEj: ventas, atención al cliente")
+        else:
+            await update.message.reply_text("🧠 ¿Qué sabés hacer bien? (1 cosa)\nEj: atención al cliente")
         return
 
     if step == "profile_a":
         data["profile_a"] = text
         if plan == "pro":
-            step = "profile_b"
+            step = "strengths"
             upsert_user(tg_uid, chat_id, plan, step, data)
-            await update.message.reply_text("🧠 ¿Qué tipo de trabajo buscás? (turnos, zona, full-time, etc.)")
+            await update.message.reply_text("⭐ 2–3 fortalezas (separadas por coma)\nEj: puntualidad, responsabilidad, aprendizaje rápido")
         else:
             data["profile"] = profile_free(data)
             step = "exp_role"
             data["_cur_exp"] = {}
             upsert_user(tg_uid, chat_id, plan, step, data)
-            await update.message.reply_text("🏢 Última experiencia: ¿Puesto? (Ej: Vendedor)")
+            await update.message.reply_text(f"🏢 Experiencia (máx {FREE_MAX_EXPS}): ¿Puesto? (Ej: Vendedor)")
+        return
+
+    if plan == "pro" and step == "strengths":
+        data["strengths"] = text
+        step = "profile_b"
+        data["profile"] = profile_pro(data)
+        upsert_user(tg_uid, chat_id, plan, step, data)
+        await update.message.reply_text("🎯 ¿Qué tipo de trabajo buscás? (turnos, zona, full-time, remoto, etc.)")
         return
 
     if plan == "pro" and step == "profile_b":
@@ -519,10 +703,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         step = "exp_role"
         data["_cur_exp"] = {}
         upsert_user(tg_uid, chat_id, plan, step, data)
-        await update.message.reply_text("🏢 Última experiencia: ¿Puesto? (Ej: Vendedor)")
+        await update.message.reply_text(f"🏢 Experiencia (hasta {PRO_MAX_EXPS}): ¿Puesto? (Ej: Vendedor)")
         return
 
-    # experiencia
+    # ----------------------------
+    # EXPERIENCIA (loop)
+    # ----------------------------
     if step == "exp_role":
         data["_cur_exp"] = {"role": text}
         step = "exp_company"
@@ -541,7 +727,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data["_cur_exp"]["dates"] = text
         step = "exp_bullets"
         upsert_user(tg_uid, chat_id, plan, step, data)
-        await update.message.reply_text("✅ 3 tareas/logros (separadas por ';')\nEj: Atención al cliente; Caja; Reposición")
+        if plan == "pro":
+            await update.message.reply_text(
+                "✅ 3–5 tareas/logros (separadas por ';')\n"
+                "Ej: Atención al cliente; Manejo de caja; Resolución de reclamos"
+            )
+        else:
+            await update.message.reply_text(
+                "✅ 2–3 tareas (separadas por ';')\n"
+                "Ej: Atención al cliente; Caja; Reposición"
+            )
         return
 
     if step == "exp_bullets":
@@ -549,21 +744,63 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not bullets:
             await update.message.reply_text("Mandame al menos 1 (separadas por ';').")
             return
-        data["_cur_exp"]["bullets"] = bullets[:6]
+
+        if plan == "pro":
+            bullets = _rewrite_bullets_pro(bullets)[:6]
+        else:
+            bullets = bullets[:4]
+
+        data["_cur_exp"]["bullets"] = bullets
+
+        # Guardar exp
         data["experiences"].append(data["_cur_exp"])
         data["_cur_exp"] = {}
+
+        # Limites / loop
+        max_exps = PRO_MAX_EXPS if plan == "pro" else FREE_MAX_EXPS
+        if len(data["experiences"]) < max_exps:
+            if plan == "pro":
+                step = "exp_more"
+                upsert_user(tg_uid, chat_id, plan, step, data)
+                await update.message.reply_text("➕ ¿Querés agregar OTRA experiencia? (SI/NO)")
+                return
+
+        # si no puede/ no quiere, pasamos a educación
         step = "edu_degree"
         upsert_user(tg_uid, chat_id, plan, step, data)
-        await update.message.reply_text("🎓 Educación: ¿Qué estudiaste? (o SALTEAR)")
+        max_edu = PRO_MAX_EDU if plan == "pro" else FREE_MAX_EDU
+        await update.message.reply_text(f"🎓 Educación (máx {max_edu}): ¿Qué estudiaste? (o SALTEAR)")
         return
 
-    # educación (simple)
-    if step == "edu_degree":
-        if text.lower() in ("saltear", "skip", "no", "n/a", "-", "x"):
-            step = "skills"
+    if step == "exp_more":
+        if _is_yes(text):
+            step = "exp_role"
             upsert_user(tg_uid, chat_id, plan, step, data)
-            await update.message.reply_text("🛠️ Habilidades (coma) o SALTEAR")
+            await update.message.reply_text("🏢 Ok. Siguiente experiencia: ¿Puesto?")
             return
+        # NO / otro
+        step = "edu_degree"
+        upsert_user(tg_uid, chat_id, plan, step, data)
+        max_edu = PRO_MAX_EDU if plan == "pro" else FREE_MAX_EDU
+        await update.message.reply_text(f"🎓 Educación (máx {max_edu}): ¿Qué estudiaste? (o SALTEAR)")
+        return
+
+    # ----------------------------
+    # EDUCACIÓN (loop)
+    # ----------------------------
+    if step == "edu_degree":
+        if _is_skip(text):
+            # PRO: cursos/certs; FREE: skills
+            if plan == "pro":
+                step = "certs"
+                upsert_user(tg_uid, chat_id, plan, step, data)
+                await update.message.reply_text(f"🏅 Cursos/Certificaciones (hasta {PRO_MAX_CERTS})\nMandá 1 (o SALTEAR):")
+            else:
+                step = "skills"
+                upsert_user(tg_uid, chat_id, plan, step, data)
+                await update.message.reply_text("🛠️ Habilidades (coma) o SALTEAR")
+            return
+
         data["_cur_edu"] = {"degree": text}
         step = "edu_place"
         upsert_user(tg_uid, chat_id, plan, step, data)
@@ -571,52 +808,142 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if step == "edu_place":
-        if "_cur_edu" not in data:
+        if "_cur_edu" not in data or not isinstance(data["_cur_edu"], dict):
             data["_cur_edu"] = {"degree": ""}
-        data["_cur_edu"]["place"] = "" if text.lower() in ("saltear", "skip", "no", "n/a", "-", "x") else text
+        data["_cur_edu"]["place"] = "" if _is_skip(text) else text
         step = "edu_dates"
         upsert_user(tg_uid, chat_id, plan, step, data)
         await update.message.reply_text("🗓️ Años/fechas (o SALTEAR)")
         return
 
     if step == "edu_dates":
-        data["_cur_edu"]["dates"] = "" if text.lower() in ("saltear", "skip", "no", "n/a", "-", "x") else text
+        data["_cur_edu"]["dates"] = "" if _is_skip(text) else text
         data["education"].append(data["_cur_edu"])
         data["_cur_edu"] = {}
+
+        max_edu = PRO_MAX_EDU if plan == "pro" else FREE_MAX_EDU
+        if len(data["education"]) < max_edu:
+            if plan == "pro":
+                step = "edu_more"
+                upsert_user(tg_uid, chat_id, plan, step, data)
+                await update.message.reply_text("➕ ¿Querés agregar OTRA educación? (SI/NO)")
+                return
+
+        # next
+        if plan == "pro":
+            step = "certs"
+            upsert_user(tg_uid, chat_id, plan, step, data)
+            await update.message.reply_text(f"🏅 Cursos/Certificaciones (hasta {PRO_MAX_CERTS})\nMandá 1 (o SALTEAR):")
+        else:
+            step = "skills"
+            upsert_user(tg_uid, chat_id, plan, step, data)
+            await update.message.reply_text("🛠️ Habilidades (coma) o SALTEAR")
+        return
+
+    if step == "edu_more":
+        if _is_yes(text):
+            step = "edu_degree"
+            upsert_user(tg_uid, chat_id, plan, step, data)
+            await update.message.reply_text("🎓 Siguiente educación: ¿Qué estudiaste? (o SALTEAR)")
+            return
+        step = "certs"
+        upsert_user(tg_uid, chat_id, plan, step, data)
+        await update.message.reply_text(f"🏅 Cursos/Certificaciones (hasta {PRO_MAX_CERTS})\nMandá 1 (o SALTEAR):")
+        return
+
+    # ----------------------------
+    # CERTS (solo PRO)
+    # ----------------------------
+    if plan == "pro" and step == "certs":
+        if _is_skip(text):
+            step = "skills"
+            upsert_user(tg_uid, chat_id, plan, step, data)
+            await update.message.reply_text("🛠️ Habilidades (coma) o SALTEAR")
+            return
+
+        data["certs"].append(text)
+        data["certs"] = data["certs"][:PRO_MAX_CERTS]
+
+        if len(data["certs"]) < PRO_MAX_CERTS:
+            step = "certs_more"
+            upsert_user(tg_uid, chat_id, plan, step, data)
+            await update.message.reply_text("➕ ¿Querés agregar OTRA certificación/curso? (SI/NO)")
+            return
+
         step = "skills"
         upsert_user(tg_uid, chat_id, plan, step, data)
         await update.message.reply_text("🛠️ Habilidades (coma) o SALTEAR")
         return
 
+    if plan == "pro" and step == "certs_more":
+        if _is_yes(text) and len(data.get("certs", [])) < PRO_MAX_CERTS:
+            step = "certs"
+            upsert_user(tg_uid, chat_id, plan, step, data)
+            await update.message.reply_text("🏅 Mandá otra certificación/curso (o SALTEAR):")
+            return
+        step = "skills"
+        upsert_user(tg_uid, chat_id, plan, step, data)
+        await update.message.reply_text("🛠️ Habilidades (coma) o SALTEAR")
+        return
+
+    # ----------------------------
+    # SKILLS + LANGS
+    # ----------------------------
     if step == "skills":
-        data["skills"] = [] if text.lower() in ("saltear", "skip", "no", "n/a", "-", "x") else _as_list_from_commas(text)
+        if _is_skip(text):
+            data["skills"] = []
+        else:
+            data["skills"] = _as_list_from_commas(text)
+            data["skills"] = data["skills"][: (PRO_MAX_SKILLS if plan == "pro" else FREE_MAX_SKILLS)]
+
         step = "languages"
         upsert_user(tg_uid, chat_id, plan, step, data)
         await update.message.reply_text("🌎 Idiomas (coma) o SALTEAR")
         return
 
     if step == "languages":
-        data["languages"] = [] if text.lower() in ("saltear", "skip", "no", "n/a", "-", "x") else _as_list_from_commas(text)
+        if _is_skip(text):
+            data["languages"] = []
+        else:
+            data["languages"] = _as_list_from_commas(text)
+            data["languages"] = data["languages"][: (PRO_MAX_LANGS if plan == "pro" else FREE_MAX_LANGS)]
 
-        # FREE: entrega inmediata
+        # ----------------------------
+        # FREE: entrega inmediata + upsell
+        # ----------------------------
         if plan == "free":
             cv = {
-                "name": data["name"], "city": data["city"], "contact": data["contact"],
-                "title": data["title"], "profile": data.get("profile") or profile_free(data),
-                "experiences": data["experiences"], "education": data["education"],
-                "skills": data["skills"], "languages": data["languages"]
+                "name": data["name"],
+                "city": data["city"],
+                "contact": data["contact"],
+                "title": data["title"],
+                "profile": data.get("profile") or profile_free(data),
+                "experiences": data["experiences"][:FREE_MAX_EXPS],
+                "education": data["education"][:FREE_MAX_EDU],
+                "skills": data["skills"][:FREE_MAX_SKILLS],
+                "languages": data["languages"][:FREE_MAX_LANGS],
             }
             pdf = build_pdf_bytes(cv, pro=False)
             pdf.seek(0)
+
             await update.message.reply_document(
                 document=InputFile(pdf, filename=f"CV_FREE_{data['name'].replace(' ', '_')}.pdf"),
-                caption="🆓 Acá tenés tu CV GRATIS."
+                caption="🆓 Listo. Acá tenés tu CV GRATIS (simple y prolijo)."
             )
+
+            # Upsell que convierte
+            await update.message.reply_text(
+                f"Si querés que se vea *mucho más profesional* (foto + diseño premium + hasta {PRO_MAX_EXPS} experiencias + cursos), "
+                f"escribí *PRO*.\n\n💎 Valor: ARS {PRO_PRICE_ARS}",
+                parse_mode="Markdown"
+            )
+
             upsert_user(tg_uid, chat_id, plan="none", step="choose_plan", data=default_data())
-            await update.message.reply_text("Si querés otro: /cv")
             return
 
+        # ----------------------------
         # PRO: crear pago y esperar webhook
+        # ----------------------------
         pref = mp_create_preference(tg_uid)
         preference_id = pref.get("id")
         init_point = pref.get("init_point") or pref.get("sandbox_init_point")
@@ -627,28 +954,30 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         create_payment(tg_uid, preference_id, PRO_PRICE_ARS)
 
-        # guardamos data completa y pasamos a waiting_payment
         step = "waiting_payment"
         upsert_user(tg_uid, chat_id, plan, step, data)
 
-        await update.message.reply_text(
-            "💎 Tu CV PRO está listo.\n\n"
-            f"Valor: ARS {PRO_PRICE_ARS}\n"
+        msg = (
+            "💎 *CV PRO listo para generar*\n\n"
+            f"Valor: *ARS {PRO_PRICE_ARS}*\n"
             "Pagá en este link y cuando se acredite te mando el PDF automáticamente:\n"
             f"{init_point}\n\n"
             "⏳ Quedate en este chat. Apenas Mercado Pago confirme el pago, te llega el PDF."
         )
+        if ENABLE_TEST_PAYMENTS:
+            msg += "\n\n🧪 *Modo test activo:* escribí *TEST* para simular pago aprobado."
+        await update.message.reply_text(msg, parse_mode="Markdown")
         return
 
     if step == "waiting_payment":
-        # ✅ MODO TEST (controlado por env var ENABLE_TEST_PAYMENTS)
+        # ✅ MODO TEST
         if ENABLE_TEST_PAYMENTS and text.strip().lower() in ("test", "aprobar", "approve"):
-            u = get_user(tg_uid)
-            if not u:
+            u2 = get_user(tg_uid)
+            if not u2:
                 await update.message.reply_text("No hay sesión. Usá /cv")
                 return
 
-            data_db = json.loads(u["data_json"])
+            data_db = json.loads(u2["data_json"])
 
             cv = {
                 "name": data_db["name"],
@@ -658,10 +987,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "title": data_db["title"],
                 "profile": data_db.get("profile") or profile_pro(data_db),
                 "photo_b64": data_db.get("photo_b64", ""),
-                "experiences": data_db["experiences"],
-                "education": data_db["education"],
-                "skills": data_db["skills"],
-                "languages": data_db["languages"],
+                "experiences": data_db["experiences"][:PRO_MAX_EXPS],
+                "education": data_db["education"][:PRO_MAX_EDU],
+                "certs": data_db.get("certs", [])[:PRO_MAX_CERTS],
+                "skills": data_db["skills"][:PRO_MAX_SKILLS],
+                "languages": data_db["languages"][:PRO_MAX_LANGS],
             }
 
             pdf = build_pdf_bytes(cv, pro=True)
@@ -681,9 +1011,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(msg)
         return
 
+    # fallback
     await update.message.reply_text("Usá /cv para empezar de nuevo.")
-
-
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -706,7 +1035,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file = await photo.get_file()
     photo_bytes = await file.download_as_bytearray()
 
-    # ✅ Guardar como base64 (string) para poder serializar a JSON
+    # Guardar como base64 (string) para JSON
     data["photo_b64"] = base64.b64encode(bytes(photo_bytes)).decode("utf-8")
 
     step = "title"
@@ -714,10 +1043,11 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✅ Foto guardada.\n🎯 ¿A qué te dedicás / qué trabajo buscás? (Ej: Electricista)")
 
 
-# commands
+# handlers
 app_tg.add_handler(CommandHandler("start", cmd_start))
 app_tg.add_handler(CommandHandler("cv", cmd_cv))
 app_tg.add_handler(CommandHandler("status", cmd_status))
+app_tg.add_handler(CommandHandler("help", cmd_help))
 app_tg.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 app_tg.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
@@ -727,16 +1057,24 @@ app_tg.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 # ----------------------------
 api = FastAPI()
 
+
 @api.get("/reset-db")
-async def reset_db():
+async def reset_db(secret: str = ""):
+    """
+    ⚠️ No lo dejes abierto en producción.
+    Llamá /reset-db?secret=TU_ADMIN_SECRET
+    """
+    if not ADMIN_SECRET:
+        return {"ok": False, "error": "ADMIN_SECRET no configurado"}
+    if secret != ADMIN_SECRET:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
     try:
-        import os
-        if os.path.exists("app.db"):
-            os.remove("app.db")
+        if os.path.exists(DB_PATH):
+            os.remove(DB_PATH)
         return {"ok": True, "message": "DB borrada"}
     except Exception as e:
         return {"ok": False, "error": str(e)}
-
 
 
 @api.on_event("startup")
@@ -802,7 +1140,6 @@ async def mp_webhook(request: Request):
     payload = await request.json()
 
     payment_id = None
-
     if isinstance(payload, dict):
         if payload.get("type") == "payment" and isinstance(payload.get("data"), dict):
             payment_id = str(payload["data"].get("id") or "")
@@ -815,7 +1152,7 @@ async def mp_webhook(request: Request):
         return {"ok": True, "ignored": True}
 
     pay = mp_get_payment(payment_id)
-    status = pay.get("status")  # approved / pending / rejected...
+    status = pay.get("status")
 
     external_ref = str(pay.get("external_reference") or "").strip()
     if not external_ref.isdigit():
@@ -838,13 +1175,18 @@ async def mp_webhook(request: Request):
         chat_id = int(u["chat_id"])
 
         cv = {
-            "name": data["name"], "city": data["city"], "contact": data["contact"],
+            "name": data["name"],
+            "city": data["city"],
+            "contact": data["contact"],
             "linkedin": data.get("linkedin", ""),
             "title": data["title"],
             "profile": data.get("profile") or profile_pro(data),
             "photo_b64": data.get("photo_b64", ""),
-            "experiences": data["experiences"], "education": data["education"],
-            "skills": data["skills"], "languages": data["languages"]
+            "experiences": (data.get("experiences") or [])[:PRO_MAX_EXPS],
+            "education": (data.get("education") or [])[:PRO_MAX_EDU],
+            "certs": (data.get("certs") or [])[:PRO_MAX_CERTS],
+            "skills": (data.get("skills") or [])[:PRO_MAX_SKILLS],
+            "languages": (data.get("languages") or [])[:PRO_MAX_LANGS],
         }
 
         pdf = build_pdf_bytes(cv, pro=True)
