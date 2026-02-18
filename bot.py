@@ -686,6 +686,17 @@ app_tg.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 # ----------------------------
 api = FastAPI()
 
+@api.get("/reset-db")
+async def reset_db():
+    try:
+        import os
+        if os.path.exists("app.db"):
+            os.remove("app.db")
+        return {"ok": True, "message": "DB borrada"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 
 @api.on_event("startup")
 async def _startup():
