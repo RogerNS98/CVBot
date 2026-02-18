@@ -640,7 +640,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-        if step == "waiting_payment":
+    if step == "waiting_payment":
         # ✅ MODO TEST (controlado por env var ENABLE_TEST_PAYMENTS)
         if ENABLE_TEST_PAYMENTS and text.strip().lower() in ("test", "aprobar", "approve"):
             u = get_user(tg_uid)
