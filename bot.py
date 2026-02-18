@@ -61,6 +61,34 @@ if not PUBLIC_BASE_URL:
 if not MP_ACCESS_TOKEN:
     raise SystemExit("Falta MP_ACCESS_TOKEN")
 
+# ----------------------------
+# WhatsApp Cloud API (ENV)
+# ----------------------------
+WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN", "").strip()
+WHATSAPP_PHONE_NUMBER_ID = os.getenv("WHATSAPP_PHONE_NUMBER_ID", "").strip()
+WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN", "").strip()
+
+def wa_send_text(to: str, text: str) -> None:
+    """
+    to: número en formato internacional sin '+' (ej: '5493764xxxxxx')
+    """
+    if not WHATSAPP_TOKEN or not WHATSAPP_PHONE_NUMBER_ID:
+        raise RuntimeError("Faltan WHATSAPP_TOKEN o WHATSAPP_PHONE_NUMBER_ID")
+
+    url = f"https://graph.facebook.com/v22.0/{WHATSAPP_PHONE_NUMBER_ID}/messages"
+    headers = {
+        "Authorization": f"Bearer {WHATSAPP_TOKEN}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to,
+        "type": "text",
+        "text": {"body": text},
+    }
+    r = requests.post(url, headers=headers, json=payload, timeout=30)
+    if r.status_code not in (200, 201):
+        raise RuntimeError(f"WhatsApp send error {r.status_code}: {r.text}")
 
 # ----------------------------
 # DB
@@ -1069,6 +1097,71 @@ app_tg.add_error_handler(on_error)
 # FastAPI app
 # ----------------------------
 api = FastAPI()
+
+@api.get("/whatsapp/webhook")
+async def whatsapp_webhook_verify(
+    hub_mode: str = "",
+    hub_challenge: str = "",
+    hub_verify_token: str = ""
+):
+    # Meta manda hub.mode, hub.challenge, hub.verify_token como query params
+    if not WHATSAPP_VERIFY_TOKEN:
+        raise HTTPException(status_code=500, detail="WHATSAPP_VERIFY_TOKEN no configurado")
+
+    if hub_mode == "subscribe" and hub_verify_token == WHATSAPP_VERIFY_TOKEN:
+        return int(hub_challenge)
+    raise HTTPException(status_code=403, detail="Forbidden")
+
+
+def _wa_extract_text(payload: dict):
+    """
+    Devuelve (from_number, text) o (None, None)
+    from_number viene sin '+'
+    """
+    try:
+        entry0 = (payload.get("entry") or [])[0]
+        changes0 = (entry0.get("changes") or [])[0]
+        value = changes0.get("value") or {}
+        messages = value.get("messages") or []
+        if not messages:
+            return None, None
+
+        m0 = messages[0]
+        from_number = str(m0.get("from") or "").strip()
+        mtype = m0.get("type")
+        if mtype == "text":
+            text = ((m0.get("text") or {}).get("body") or "").strip()
+            return from_number, text
+        return from_number, ""  # otros tipos ignorados por ahora
+    except Exception:
+        return None, None
+
+
+@api.post("/whatsapp/webhook")
+async def whatsapp_webhook(request: Request):
+    payload = await request.json()
+    from_number, text = _wa_extract_text(payload)
+
+    # Siempre responder 200 rápido
+    if not from_number:
+        return {"ok": True}
+
+    # --- TEST RÁPIDO (para confirmar que funciona) ---
+    # Te responde "pong" si le mandás "ping"
+    if (text or "").strip().lower() == "ping":
+        try:
+            await asyncio.to_thread(wa_send_text, from_number, "pong ✅ (WhatsApp webhook OK)")
+        except Exception as e:
+            print("wa_send_text error:", repr(e))
+        return {"ok": True}
+
+    # Más adelante: acá conectamos tu "handle_text" adaptado a WhatsApp
+    try:
+        await asyncio.to_thread(wa_send_text, from_number, "Te leí ✅. Decime GRATIS o PRO para arrancar.")
+    except Exception as e:
+        print("wa_send_text error:", repr(e))
+
+    return {"ok": True}
 
 
 @api.get("/reset-db")
