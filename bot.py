@@ -34,7 +34,7 @@ PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").strip()  # ej: https://tuapp.
 ENABLE_TEST_PAYMENTS = os.getenv("ENABLE_TEST_PAYMENTS", "0").strip() == "1"
 
 MP_ACCESS_TOKEN = os.getenv("MP_ACCESS_TOKEN", "").strip()
-MP_WEBHOOK_SECRET = os.getenv("MP_WEBHOOK_SECRET", "").strip()  # opcional (si lo configurás)
+MP_WEBHOOK_SECRET = os.getenv("MP_WEBHOOK_SECRET", "").strip()  # opcional
 PRO_PRICE_ARS = int(os.getenv("PRO_PRICE_ARS", "1500"))
 
 DB_PATH = os.getenv("DB_PATH", "app.db")
@@ -189,6 +189,24 @@ def html_msg(s: str) -> str:
     return escape(s or "", quote=False)
 
 
+def bullets_columns(items, ncols=2):
+    items = [i.strip() for i in (items or []) if (i or "").strip()]
+    if not items:
+        return []
+    cols = [[] for _ in range(ncols)]
+    for idx, it in enumerate(items):
+        cols[idx % ncols].append(it)
+
+    max_len = max(len(c) for c in cols)
+    rows = []
+    for r in range(max_len):
+        row = []
+        for c in range(ncols):
+            row.append(cols[c][r] if r < len(cols[c]) else "")
+        rows.append(row)
+    return rows
+
+
 # ----------------------------
 # Copy / textos (FREE vs PRO)
 # ----------------------------
@@ -269,73 +287,21 @@ def mp_get_payment(payment_id: str) -> Dict[str, Any]:
 
 
 # ----------------------------
-# PDF helpers
+# PDF builder (ATS elegante)
 # ----------------------------
-def _chip_table(skills, max_width_pts):
-    """
-    Skills como 'chips' en tabla que se parte en páginas (sin KeepTogether gigante).
-    """
-    styles = getSampleStyleSheet()
-    chip_style = ParagraphStyle(
-        "chip",
-        parent=styles["Normal"],
-        fontName="Helvetica",
-        fontSize=9,
-        leading=11,
-        textColor=colors.black,
-    )
-
-    # Medición simple por caracteres (suficiente para layout)
-    # armamos filas para no exceder ancho
-    rows = []
-    cur = []
-    cur_w = 0.0
-
-    def approx_w(text):
-        # aprox: 5 pts por char + padding
-        return (len(text) * 5.0) + 18.0
-
-    for s in skills:
-        t = _clean(s)
-        if not t:
-            continue
-        w = approx_w(t)
-        if cur and (cur_w + w > max_width_pts):
-            rows.append(cur)
-            cur = []
-            cur_w = 0.0
-        cur.append(Paragraph(html_msg(t), chip_style))
-        cur_w += w
-    if cur:
-        rows.append(cur)
-
-    tbl = Table(rows, hAlign="LEFT")
-    ts = TableStyle([
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 6),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-        ("TOPPADDING", (0, 0), (-1, -1), 3),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-        ("GRID", (0, 0), (-1, -1), 0, colors.white),
-    ])
-    for ri, r in enumerate(rows):
-        for ci, _ in enumerate(r):
-            ts.add("BACKGROUND", (ci, ri), (ci, ri), colors.whitesmoke)
-            ts.add("BOX", (ci, ri), (ci, ri), 0.6, colors.lightgrey)
-    tbl.setStyle(ts)
-    return tbl
+ACCENT = colors.HexColor("#1F2A37")   # premium dark gray-blue
+TEXT = colors.HexColor("#111827")
+MUTED = colors.HexColor("#4B5563")
+LINE = colors.HexColor("#E5E7EB")
 
 
 def build_pdf_bytes(cv: dict, pro: bool) -> BytesIO:
-    """
-    PDF lindo, ATS-friendly, 1 columna (estable). Sin KeepTogether gigante => no LayoutError.
-    """
     buf = BytesIO()
     doc = SimpleDocTemplate(
         buf,
         pagesize=A4,
-        leftMargin=1.8 * cm,
-        rightMargin=1.8 * cm,
+        leftMargin=1.9 * cm,
+        rightMargin=1.9 * cm,
         topMargin=1.6 * cm,
         bottomMargin=1.6 * cm,
         title="CV",
@@ -345,40 +311,88 @@ def build_pdf_bytes(cv: dict, pro: bool) -> BytesIO:
     styles = getSampleStyleSheet()
 
     s_name = ParagraphStyle(
-        "name", parent=styles["Normal"],
-        fontName="Helvetica-Bold", fontSize=22 if pro else 20, leading=25, spaceAfter=4
+        "name",
+        parent=styles["Normal"],
+        fontName="Helvetica-Bold",
+        fontSize=23 if pro else 20,
+        leading=27,
+        textColor=TEXT,
+        spaceAfter=2,
     )
     s_title = ParagraphStyle(
-        "title", parent=styles["Normal"],
-        fontName="Helvetica", fontSize=11.5, leading=14,
-        textColor=colors.HexColor("#333333"), spaceAfter=6
+        "title",
+        parent=styles["Normal"],
+        fontName="Helvetica-Bold" if pro else "Helvetica",
+        fontSize=11.5,
+        leading=14,
+        textColor=ACCENT,
+        spaceAfter=6,
     )
     s_contact = ParagraphStyle(
-        "contact", parent=styles["Normal"],
-        fontName="Helvetica", fontSize=9.8, leading=12.5,
-        textColor=colors.HexColor("#333333"), spaceAfter=10
+        "contact",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=9.8,
+        leading=12.5,
+        textColor=MUTED,
+        spaceAfter=10,
     )
-    s_h = ParagraphStyle(
-        "h", parent=styles["Normal"],
-        fontName="Helvetica-Bold", fontSize=11.3, leading=14,
-        spaceBefore=10, spaceAfter=6
+
+    s_section = ParagraphStyle(
+        "section",
+        parent=styles["Normal"],
+        fontName="Helvetica-Bold",
+        fontSize=10.6,
+        leading=13,
+        textColor=ACCENT,
+        spaceBefore=10,
+        spaceAfter=6,
     )
-    s_p = ParagraphStyle(
-        "p", parent=styles["Normal"],
-        fontName="Helvetica", fontSize=10.3, leading=13.8, spaceAfter=6
+
+    s_body = ParagraphStyle(
+        "body",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=10.3,
+        leading=14.2,
+        textColor=TEXT,
+        spaceAfter=6,
     )
+
     s_meta = ParagraphStyle(
-        "meta", parent=styles["Normal"],
-        fontName="Helvetica-Oblique", fontSize=9.2, leading=11.5,
-        textColor=colors.HexColor("#555555"), spaceAfter=4
+        "meta",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=9.2,
+        leading=11.8,
+        textColor=MUTED,
+        spaceAfter=3,
     )
-    s_small = ParagraphStyle(
-        "small", parent=styles["Normal"],
-        fontName="Helvetica", fontSize=9.8, leading=12.8, spaceAfter=4
+
+    s_bul = ParagraphStyle(
+        "bul",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=9.8,
+        leading=13.0,
+        textColor=TEXT,
+        leftIndent=14,
+        spaceAfter=6,
+    )
+
+    s_skill = ParagraphStyle(
+        "skill",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=10.0,
+        leading=13.0,
+        textColor=TEXT,
+        spaceAfter=2,
     )
 
     story = []
 
+    # Header
     name = _clean(cv.get("name", "")) or "Nombre Apellido"
     title = _clean(cv.get("title", ""))
     profile = _clean(cv.get("profile", ""))
@@ -390,9 +404,9 @@ def build_pdf_bytes(cv: dict, pro: bool) -> BytesIO:
         contact_parts.append(_clean(cv["contact"]))
     if pro and _clean(cv.get("linkedin", "")):
         contact_parts.append(_clean(cv["linkedin"]))
-    contact_line = " • ".join(contact_parts)
+    contact_line = "  •  ".join(contact_parts)
 
-    # Foto (PRO) opcional
+    # Foto PRO opcional
     photo_flowable = None
     if pro:
         b64 = _clean(cv.get("photo_b64", ""))
@@ -400,8 +414,8 @@ def build_pdf_bytes(cv: dict, pro: bool) -> BytesIO:
             try:
                 photo_bytes = base64.b64decode(b64)
                 img = Image(BytesIO(photo_bytes))
-                img.drawHeight = 3.0 * cm
-                img.drawWidth = 3.0 * cm
+                img.drawHeight = 3.2 * cm
+                img.drawWidth = 3.2 * cm
                 photo_flowable = img
             except Exception:
                 photo_flowable = None
@@ -413,7 +427,7 @@ def build_pdf_bytes(cv: dict, pro: bool) -> BytesIO:
         header_left.append(Paragraph(html_msg(contact_line), s_contact))
 
     if photo_flowable:
-        hdr = Table([[header_left, photo_flowable]], colWidths=[doc.width - 3.2 * cm, 3.2 * cm])
+        hdr = Table([[header_left, photo_flowable]], colWidths=[doc.width - 3.5 * cm, 3.5 * cm])
         hdr.setStyle(TableStyle([
             ("VALIGN", (0, 0), (-1, -1), "TOP"),
             ("ALIGN", (1, 0), (1, 0), "RIGHT"),
@@ -426,71 +440,99 @@ def build_pdf_bytes(cv: dict, pro: bool) -> BytesIO:
     else:
         story.extend(header_left)
 
-    # Línea
-    story.append(Spacer(1, 6))
-    story.append(Table([[""]], colWidths=[doc.width], rowHeights=[1],
-                       style=TableStyle([("BACKGROUND", (0, 0), (-1, -1), colors.black)])))
+    # Divider
+    story.append(Spacer(1, 4))
+    story.append(Table([[""]], colWidths=[doc.width], rowHeights=[1.3],
+                       style=TableStyle([("BACKGROUND", (0, 0), (-1, -1), ACCENT)])))
     story.append(Spacer(1, 10))
 
     # Perfil
     if profile:
-        story.append(Paragraph("PERFIL", s_h))
-        story.append(Paragraph(html_msg(profile), s_p))
+        story.append(Paragraph("PERFIL", s_section))
+        story.append(Paragraph(html_msg(profile), s_body))
 
     # Experiencia
     exps = cv.get("experiences", []) or []
     if exps:
-        story.append(Paragraph("EXPERIENCIA", s_h))
+        story.append(Paragraph("EXPERIENCIA", s_section))
         for exp in exps:
             role = _clean(exp.get("role", ""))
             company = _clean(exp.get("company", ""))
             dates = _clean(exp.get("dates", ""))
-            head = " — ".join([p for p in [role, company] if p]) or "Experiencia"
-            story.append(Paragraph(html_msg(head), ParagraphStyle("exphead", parent=s_p, fontName="Helvetica-Bold", spaceAfter=2)))
+
+            head_parts = [p for p in [role, company] if p]
+            head = " — ".join(head_parts) if head_parts else "Experiencia"
+
+            head_style = ParagraphStyle(
+                "exphead", parent=s_body,
+                fontName="Helvetica-Bold",
+                spaceAfter=2
+            )
+            story.append(Paragraph(html_msg(head), head_style))
+
             if dates:
                 story.append(Paragraph(html_msg(dates), s_meta))
 
-            bullets = exp.get("bullets", []) or []
+            bullets = [b for b in (exp.get("bullets", []) or []) if _clean(b)]
             if bullets:
-                li = "".join([f"<li>{html_msg(b)}</li>" for b in bullets if _clean(b)])
-                story.append(Paragraph(f"<ul>{li}</ul>", ParagraphStyle("bul", parent=s_small, leftIndent=14, bulletIndent=0)))
-            story.append(Spacer(1, 6))
+                li = "".join([f"<li>{html_msg(b)}</li>" for b in bullets])
+                story.append(Paragraph(f"<ul>{li}</ul>", s_bul))
+
+            story.append(Spacer(1, 4))
 
     # Educación
     edu = cv.get("education", []) or []
     if edu:
-        story.append(Paragraph("EDUCACIÓN", s_h))
+        story.append(Paragraph("EDUCACIÓN", s_section))
         for e in edu:
             degree = _clean(e.get("degree", ""))
             place = _clean(e.get("place", ""))
             dates = _clean(e.get("dates", ""))
+
             line = " — ".join([p for p in [degree, place] if p])
             if line:
-                story.append(Paragraph(html_msg(line), s_p))
+                edu_style = ParagraphStyle("eduline", parent=s_body, fontName="Helvetica-Bold", spaceAfter=2)
+                story.append(Paragraph(html_msg(line), edu_style))
             if dates:
                 story.append(Paragraph(html_msg(dates), s_meta))
+            story.append(Spacer(1, 2))
 
     # Cursos/Certs (PRO)
     certs = (cv.get("certs", []) or []) if pro else []
+    certs = [c for c in certs if _clean(c)]
     if pro and certs:
-        story.append(Paragraph("CURSOS / CERTIFICACIONES", s_h))
-        li = "".join([f"<li>{html_msg(x)}</li>" for x in certs if _clean(x)])
-        story.append(Paragraph(f"<ul>{li}</ul>", ParagraphStyle("certs", parent=s_small, leftIndent=14, bulletIndent=0)))
+        story.append(Paragraph("CURSOS / CERTIFICACIONES", s_section))
+        li = "".join([f"<li>{html_msg(x)}</li>" for x in certs[:8]])
+        story.append(Paragraph(f"<ul>{li}</ul>", s_bul))
 
-    # Skills
-    skills = cv.get("skills", []) or []
+    # Habilidades (LISTA 2 columnas, sin look Excel)
+    skills = [s for s in (cv.get("skills", []) or []) if _clean(s)]
     if skills:
-        story.append(Paragraph("HABILIDADES", s_h))
-        if pro:
-            story.append(_chip_table(skills, max_width_pts=doc.width - 2))
-        else:
-            story.append(Paragraph(html_msg(", ".join(skills)), s_p))
+        story.append(Paragraph("HABILIDADES", s_section))
+
+        rows = bullets_columns(skills, ncols=2)
+        data_tbl = []
+        for a, b in rows:
+            left = f"• {html_msg(a)}" if a else ""
+            right = f"• {html_msg(b)}" if b else ""
+            data_tbl.append([Paragraph(left, s_skill), Paragraph(right, s_skill)])
+
+        tbl = Table(data_tbl, colWidths=[doc.width * 0.5, doc.width * 0.5], hAlign="LEFT")
+        tbl.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 0),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+            ("TOPPADDING", (0, 0), (-1, -1), 0),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+        ]))
+        story.append(tbl)
+        story.append(Spacer(1, 4))
 
     # Idiomas
-    langs = cv.get("languages", []) or []
+    langs = [l for l in (cv.get("languages", []) or []) if _clean(l)]
     if langs:
-        story.append(Paragraph("IDIOMAS", s_h))
-        story.append(Paragraph(html_msg(", ".join(langs)), s_p))
+        story.append(Paragraph("IDIOMAS", s_section))
+        story.append(Paragraph(html_msg(", ".join(langs)), s_body))
 
     doc.build(story)
     buf.seek(0)
@@ -530,7 +572,7 @@ def default_data():
         "photo_b64": "",
         "experiences": [],
         "education": [],
-        "certs": "",
+        "certs": [],
         "skills": [],
         "languages": [],
         "_cur_exp": {},
@@ -572,13 +614,11 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg)
 
 
-# ---- Error handler: evita "No error handlers..."
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE):
     try:
         print("BOT ERROR:", repr(context.error))
     except Exception:
         pass
-    # Si podemos avisar al usuario, mejor
     try:
         if isinstance(update, Update) and update.effective_message:
             await update.effective_message.reply_text("⚠️ Ocurrió un error. Probá de nuevo con /cv.")
@@ -947,7 +987,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if step == "waiting_payment":
-        # TEST mode
         if ENABLE_TEST_PAYMENTS and text.strip().lower() in ("test", "aprobar", "approve"):
             u2 = get_user(tg_uid)
             if not u2:
