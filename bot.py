@@ -2,9 +2,11 @@ import os
 import json
 import sqlite3
 import base64
+import asyncio
 from io import BytesIO
 from typing import Optional, Dict, Any
 from datetime import datetime
+from html import escape
 
 import requests
 from fastapi import FastAPI, Request, HTTPException
@@ -12,11 +14,16 @@ from fastapi import FastAPI, Request, HTTPException
 from telegram import Update, InputFile
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 
+# ReportLab (PDF)
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import cm
-from reportlab.pdfgen import canvas
-from reportlab.lib.utils import ImageReader
 from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.platypus import (
+    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image, KeepTogether
+)
+from reportlab.lib.enums import TA_LEFT
+from reportlab.pdfbase.pdfmetrics import stringWidth
 
 
 # ----------------------------
@@ -34,7 +41,6 @@ PRO_PRICE_ARS = int(os.getenv("PRO_PRICE_ARS", "1500"))
 
 DB_PATH = os.getenv("DB_PATH", "app.db")
 
-# ⚠️ Seguridad: si querés reset-db, poné un secreto
 ADMIN_SECRET = os.getenv("ADMIN_SECRET", "").strip()
 
 # Limits (FREE vs PRO)
@@ -182,255 +188,12 @@ def _is_no(text: str) -> bool:
 
 def _is_skip(text: str) -> bool:
     t = _clean(text).lower()
-    return t in ("saltear", "skip", "no", "n/a", "-", "x", "ninguno", "ninguna")
+    return t in ("saltear", "skip", "n/a", "-", "x", "ninguno", "ninguna", "no")
 
 
-# ----------------------------
-# PDF helpers (FREE vs PRO)
-# ----------------------------
-def _wrap_text(c: canvas.Canvas, text: str, x: float, y: float, max_width: float,
-              leading: float = 14, font_name="Helvetica", font_size=11):
-    text = (text or "").strip()
-    if not text:
-        return y
-    c.setFont(font_name, font_size)
-    words = text.split()
-    line = ""
-    for w in words:
-        test = (line + " " + w).strip()
-        if c.stringWidth(test, font_name, font_size) <= max_width:
-            line = test
-        else:
-            if line:
-                c.drawString(x, y, line)
-                y -= leading
-            line = w
-    if line:
-        c.drawString(x, y, line)
-        y -= leading
-    return y
-
-
-def _draw_chip(c: canvas.Canvas, x: float, y: float, text: str, font_size=9, pad_x=6, pad_y=3):
-    """
-    Dibuja una "chip" simple (PRO).
-    Devuelve (w, h) en puntos.
-    """
-    text = _clean(text)
-    if not text:
-        return 0, 0
-    c.setFont("Helvetica", font_size)
-    tw = c.stringWidth(text, "Helvetica", font_size)
-    w = tw + (pad_x * 2)
-    h = font_size + (pad_y * 2)
-    c.setFillColor(colors.whitesmoke)
-    c.setStrokeColor(colors.lightgrey)
-    c.roundRect(x, y - h + 2, w, h, 6, stroke=1, fill=1)
-    c.setFillColor(colors.black)
-    c.drawString(x + pad_x, y - h + pad_y + 2, text)
-    return w, h
-
-
-def build_pdf_bytes(cv: dict, pro: bool) -> BytesIO:
-    buf = BytesIO()
-    c = canvas.Canvas(buf, pagesize=A4)
-    width, height = A4
-
-    left = 2.0 * cm
-    right = width - 2.0 * cm
-    y = height - 2.0 * cm
-
-    # Foto (PRO)
-    photo_bytes = None
-    if pro:
-        b64 = (cv.get("photo_b64") or "").strip()
-        if b64:
-            try:
-                photo_bytes = base64.b64decode(b64)
-            except Exception:
-                photo_bytes = None
-
-    # Header layout
-    img_size = 3.8 * cm if pro else 0
-    img_pad = 0.9 * cm
-    img_x = right - img_size
-    img_y = (height - 2.0 * cm) - img_size
-    text_right_limit = right
-
-    # Decorative line (PRO)
-    if pro:
-        c.setStrokeColor(colors.black)
-        c.setLineWidth(2.2)
-        c.line(left, height - 1.65 * cm, right, height - 1.65 * cm)
-
-    if pro and photo_bytes:
-        text_right_limit = right - img_size - img_pad
-        try:
-            img_reader = ImageReader(BytesIO(photo_bytes))
-            c.drawImage(
-                img_reader, img_x, img_y,
-                width=img_size, height=img_size,
-                preserveAspectRatio=True, anchor='c', mask="auto"
-            )
-            c.setLineWidth(0.8)
-            c.setStrokeColor(colors.black)
-            c.rect(img_x, img_y, img_size, img_size)
-        except Exception:
-            photo_bytes = None
-            text_right_limit = right
-
-    # Name
-    name = cv.get("name", "")
-    y = _wrap_text(
-        c, name, left, y,
-        max_width=(text_right_limit - left),
-        leading=20 if pro else 18,
-        font_name="Helvetica-Bold",
-        font_size=20 if pro else 18
-    )
-    y += 6
-
-    # Title
-    title = _clean(cv.get("title", ""))
-    if title:
-        y = _wrap_text(
-            c, title, left, y,
-            max_width=(text_right_limit - left),
-            leading=14,
-            font_name="Helvetica",
-            font_size=12 if pro else 11
-        )
-
-    # Contact
-    contact_parts = []
-    if _clean(cv.get("city", "")):
-        contact_parts.append(_clean(cv["city"]))
-    if _clean(cv.get("contact", "")):
-        contact_parts.append(_clean(cv["contact"]))
-    if pro and _clean(cv.get("linkedin", "")):
-        contact_parts.append(_clean(cv["linkedin"]))
-    if contact_parts:
-        c.setFillColor(colors.black)
-        y = _wrap_text(
-            c, " | ".join(contact_parts), left, y,
-            max_width=(text_right_limit - left),
-            leading=13,
-            font_name="Helvetica-Oblique" if pro else "Helvetica",
-            font_size=10 if pro else 10
-        )
-
-    if pro and photo_bytes:
-        safe_y = img_y - 0.9 * cm
-        if y > safe_y:
-            y = safe_y
-
-    y -= 8
-
-    def new_page_if_needed(min_y=3.0 * cm):
-        nonlocal y
-        if y < min_y:
-            c.showPage()
-            # reset
-            y = height - 2.0 * cm
-
-    def section(title_txt: str):
-        nonlocal y
-        new_page_if_needed(4.0 * cm)
-        y -= 10
-        c.setFillColor(colors.black)
-        c.setFont("Helvetica-Bold", 12 if pro else 12)
-        c.drawString(left, y, title_txt.upper())
-        y -= 7
-        c.setLineWidth(0.7 if pro else 0.8)
-        c.setStrokeColor(colors.black if pro else colors.black)
-        c.line(left, y, right, y)
-        y -= 14
-
-    # Perfil
-    profile = _clean(cv.get("profile", ""))
-    if profile:
-        section("Perfil")
-        y = _wrap_text(c, profile, left, y, max_width=(right - left), leading=14, font_name="Helvetica", font_size=11)
-        y -= 2
-
-    # Experiencia
-    exps = cv.get("experiences", [])
-    if exps:
-        section("Experiencia")
-        for exp in exps:
-            new_page_if_needed()
-            head = " — ".join([p for p in [_clean(exp.get("role", "")), _clean(exp.get("company", ""))] if p])
-            c.setFont("Helvetica-Bold", 11)
-            c.drawString(left, y, head)
-            y -= 14
-            dates = _clean(exp.get("dates", ""))
-            if dates:
-                c.setFont("Helvetica-Oblique", 10)
-                c.drawString(left, y, dates)
-                y -= 12
-            bullets = exp.get("bullets", []) or []
-            for b in bullets:
-                b = _clean(b)
-                if not b:
-                    continue
-                y = _wrap_text(c, "• " + b, left, y, max_width=(right - left), leading=13, font_name="Helvetica", font_size=10.5)
-            y -= 6
-
-    # Educación
-    edu = cv.get("education", [])
-    if edu:
-        section("Educación")
-        for e in edu:
-            new_page_if_needed()
-            parts = [p for p in [_clean(e.get("degree", "")), _clean(e.get("place", "")), _clean(e.get("dates", ""))] if p]
-            if not parts:
-                continue
-            c.setFont("Helvetica", 11)
-            y = _wrap_text(c, " — ".join(parts), left, y, max_width=(right - left), leading=13, font_name="Helvetica", font_size=11)
-            y -= 2
-
-    # Certificaciones / Cursos (solo PRO)
-    certs = cv.get("certs", []) if pro else []
-    if pro and certs:
-        section("Cursos / Certificaciones")
-        for it in certs:
-            new_page_if_needed()
-            y = _wrap_text(c, f"• {it}", left, y, max_width=(right - left), leading=13, font_name="Helvetica", font_size=11)
-        y -= 2
-
-    # Skills
-    skills = cv.get("skills", []) or []
-    if skills:
-        section("Habilidades")
-        if pro:
-            # chips en filas
-            x = left
-            line_y = y
-            for sk in skills:
-                w, h = _draw_chip(c, x, line_y, sk, font_size=9)
-                if w <= 0:
-                    continue
-                if x + w > right:
-                    # nueva fila
-                    line_y -= (h + 6)
-                    x = left
-                    new_page_if_needed(min_y=3.2 * cm)
-                _draw_chip(c, x, line_y, sk, font_size=9)
-                x += (w + 6)
-            y = line_y - 18
-        else:
-            y = _wrap_text(c, ", ".join(skills), left, y, max_width=(right - left), leading=14, font_name="Helvetica", font_size=11)
-
-    # Idiomas
-    langs = cv.get("languages", []) or []
-    if langs:
-        section("Idiomas")
-        y = _wrap_text(c, ", ".join(langs), left, y, max_width=(right - left), leading=14, font_name="Helvetica", font_size=11)
-
-    c.showPage()
-    c.save()
-    buf.seek(0)
-    return buf
+def html_msg(s: str) -> str:
+    """Escapa texto para parse_mode=HTML de Telegram."""
+    return escape(s or "", quote=False)
 
 
 # ----------------------------
@@ -439,7 +202,6 @@ def build_pdf_bytes(cv: dict, pro: bool) -> BytesIO:
 def profile_free(data: dict) -> str:
     title = _clean(data.get("title", "")) or "Perfil laboral"
     a = _clean(data.get("profile_a", ""))
-    # Cortito a propósito
     if a:
         return f"{title}. Experiencia en {a}."
     return f"{title}."
@@ -449,7 +211,7 @@ def profile_pro(data: dict) -> str:
     title = _clean(data.get("title", "")) or "Perfil laboral"
     a = _clean(data.get("profile_a", ""))
     b = _clean(data.get("profile_b", ""))
-    strengths = _clean(data.get("strengths", ""))  # opcional
+    strengths = _clean(data.get("strengths", ""))
     base = f"{title}. "
     if a:
         base += f"Experiencia en {a}. "
@@ -457,20 +219,16 @@ def profile_pro(data: dict) -> str:
         base += f"Fortalezas: {strengths}. "
     if b:
         base += f"Busco {b}. "
-    base += "Enfoque en prolijidad, responsabilidad y resultados medibles."
+    base += "Enfoque en prolijidad, responsabilidad y resultados."
     return base.strip()
 
 
 def _rewrite_bullets_pro(bullets):
-    """
-    Reescritura simple para que suenen más PRO sin IA externa.
-    """
     out = []
     for b in bullets or []:
         t = _clean(b)
         if not t:
             continue
-        # Capitalizar + quitar punto duplicado
         t = t[0].upper() + t[1:] if len(t) > 1 else t.upper()
         if not t.endswith("."):
             t += "."
@@ -479,7 +237,7 @@ def _rewrite_bullets_pro(bullets):
 
 
 # ----------------------------
-# Mercado Pago
+# Mercado Pago (requests -> usar en thread)
 # ----------------------------
 def mp_create_preference(tg_uid: int) -> Dict[str, Any]:
     url = "https://api.mercadopago.com/checkout/preferences"
@@ -518,22 +276,321 @@ def mp_get_payment(payment_id: str) -> Dict[str, Any]:
 
 
 # ----------------------------
+# PDF: diseño lindo (Platypus)
+# ----------------------------
+def _chip_table(skills, max_width, font_name="Helvetica", font_size=9, pad_x=6, pad_y=3, gap=6):
+    """
+    Crea filas de 'chips' usando una tabla.
+    No depende de canvas manual.
+    """
+    rows = []
+    cur = []
+    cur_w = 0.0
+
+    def chip_w(text):
+        tw = stringWidth(text, font_name, font_size)
+        return tw + (pad_x * 2) + gap
+
+    for s in skills:
+        t = _clean(s)
+        if not t:
+            continue
+        w = chip_w(t)
+        if cur and (cur_w + w > max_width):
+            rows.append(cur)
+            cur = []
+            cur_w = 0.0
+        cur.append(t)
+        cur_w += w
+    if cur:
+        rows.append(cur)
+
+    # Armar tabla con estilo de chips
+    # Cada celda: texto con fondo
+    data = []
+    for r in rows:
+        data.append(r)
+
+    tbl = Table(data, hAlign="LEFT")
+    ts = TableStyle([
+        ("FONT", (0, 0), (-1, -1), font_name, font_size),
+        ("TEXTCOLOR", (0, 0), (-1, -1), colors.black),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), pad_x),
+        ("RIGHTPADDING", (0, 0), (-1, -1), pad_x),
+        ("TOPPADDING", (0, 0), (-1, -1), pad_y),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), pad_y),
+        ("GRID", (0, 0), (-1, -1), 0, colors.white),
+    ])
+
+    # “chip look”: fondo y bordes por celda
+    for ri, r in enumerate(data):
+        for ci, _ in enumerate(r):
+            ts.add("BACKGROUND", (ci, ri), (ci, ri), colors.whitesmoke)
+            ts.add("BOX", (ci, ri), (ci, ri), 0.6, colors.lightgrey)
+
+    tbl.setStyle(ts)
+    return tbl
+
+
+def build_pdf_bytes(cv: dict, pro: bool) -> BytesIO:
+    """
+    CV modernito:
+    - Header con nombre + título + contacto
+    - PRO: foto (si hay)
+    - Secciones con títulos claros
+    - 2 columnas: izquierda main, derecha sidebar (skills/idiomas/certs)
+    """
+    buf = BytesIO()
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=A4,
+        leftMargin=1.6 * cm,
+        rightMargin=1.6 * cm,
+        topMargin=1.5 * cm,
+        bottomMargin=1.4 * cm,
+        title="CV",
+        author="CVBot",
+    )
+
+    styles = getSampleStyleSheet()
+
+    # Estilos custom
+    s_name = ParagraphStyle(
+        "name",
+        parent=styles["Normal"],
+        fontName="Helvetica-Bold",
+        fontSize=22 if pro else 20,
+        leading=24,
+        spaceAfter=4,
+        textColor=colors.black,
+    )
+    s_title = ParagraphStyle(
+        "title",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=11.5,
+        leading=14,
+        textColor=colors.HexColor("#333333"),
+        spaceAfter=6,
+    )
+    s_contact = ParagraphStyle(
+        "contact",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=9.8,
+        leading=12,
+        textColor=colors.HexColor("#333333"),
+        spaceAfter=10,
+    )
+    s_h = ParagraphStyle(
+        "h",
+        parent=styles["Normal"],
+        fontName="Helvetica-Bold",
+        fontSize=11.5,
+        leading=14,
+        spaceBefore=10,
+        spaceAfter=6,
+        textColor=colors.black,
+    )
+    s_p = ParagraphStyle(
+        "p",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=10.3,
+        leading=13.5,
+        textColor=colors.black,
+        spaceAfter=6,
+    )
+    s_small = ParagraphStyle(
+        "small",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=9.6,
+        leading=12.5,
+        textColor=colors.black,
+        spaceAfter=4,
+    )
+    s_meta = ParagraphStyle(
+        "meta",
+        parent=styles["Normal"],
+        fontName="Helvetica-Oblique",
+        fontSize=9.2,
+        leading=11.5,
+        textColor=colors.HexColor("#555555"),
+        spaceAfter=4,
+    )
+
+    story = []
+
+    # Header content
+    name = _clean(cv.get("name", "")) or "Nombre Apellido"
+    title = _clean(cv.get("title", ""))
+    profile = _clean(cv.get("profile", ""))
+
+    contact_parts = []
+    if _clean(cv.get("city", "")):
+        contact_parts.append(_clean(cv["city"]))
+    if _clean(cv.get("contact", "")):
+        contact_parts.append(_clean(cv["contact"]))
+    if pro and _clean(cv.get("linkedin", "")):
+        contact_parts.append(_clean(cv["linkedin"]))
+    contact_line = " • ".join(contact_parts)
+
+    # Foto (PRO)
+    photo_flowable = None
+    if pro:
+        b64 = _clean(cv.get("photo_b64", ""))
+        if b64:
+            try:
+                photo_bytes = base64.b64decode(b64)
+                img = Image(BytesIO(photo_bytes))
+                img.drawHeight = 3.2 * cm
+                img.drawWidth = 3.2 * cm
+                photo_flowable = img
+            except Exception:
+                photo_flowable = None
+
+    # Header table: izquierda texto / derecha foto
+    left_header = []
+    left_header.append(Paragraph(html_msg(name), s_name))
+    if title:
+        left_header.append(Paragraph(html_msg(title), s_title))
+    if contact_line:
+        left_header.append(Paragraph(html_msg(contact_line), s_contact))
+
+    header_tbl_data = []
+    if pro and photo_flowable:
+        header_tbl_data = [[KeepTogether(left_header), photo_flowable]]
+        tbl = Table(header_tbl_data, colWidths=[doc.width - 3.4*cm, 3.4*cm])
+        tbl.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("ALIGN", (1, 0), (1, 0), "RIGHT"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 0),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+            ("TOPPADDING", (0, 0), (-1, -1), 0),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+        ]))
+        story.append(tbl)
+    else:
+        story.extend(left_header)
+
+    # Línea fina
+    story.append(Spacer(1, 6))
+    story.append(Table([[""]], colWidths=[doc.width], rowHeights=[1],
+                       style=TableStyle([("BACKGROUND", (0, 0), (-1, -1), colors.black)])))
+    story.append(Spacer(1, 10))
+
+    # 2 columnas: Main + Sidebar
+    main_w = doc.width * 0.66
+    side_w = doc.width - main_w
+
+    main = []
+    side = []
+
+    # Perfil / Resumen
+    if profile:
+        main.append(Paragraph("PERFIL", s_h))
+        main.append(Paragraph(html_msg(profile), s_p))
+
+    # Experiencia
+    exps = cv.get("experiences", []) or []
+    if exps:
+        main.append(Paragraph("EXPERIENCIA", s_h))
+        for exp in exps:
+            role = _clean(exp.get("role", ""))
+            company = _clean(exp.get("company", ""))
+            dates = _clean(exp.get("dates", ""))
+            head = " — ".join([p for p in [role, company] if p]) or "Experiencia"
+            main.append(Paragraph(html_msg(head), ParagraphStyle("exphead", parent=s_p, fontName="Helvetica-Bold", spaceAfter=2)))
+            if dates:
+                main.append(Paragraph(html_msg(dates), s_meta))
+            bullets = exp.get("bullets", []) or []
+            if bullets:
+                # bullets en HTML
+                li = "".join([f"<li>{html_msg(b)}</li>" for b in bullets if _clean(b)])
+                main.append(Paragraph(f"<ul>{li}</ul>", ParagraphStyle("bul", parent=s_small, leftIndent=14, bulletIndent=0)))
+            main.append(Spacer(1, 6))
+
+    # Educación
+    edu = cv.get("education", []) or []
+    if edu:
+        main.append(Paragraph("EDUCACIÓN", s_h))
+        for e in edu:
+            degree = _clean(e.get("degree", ""))
+            place = _clean(e.get("place", ""))
+            dates = _clean(e.get("dates", ""))
+            line = " — ".join([p for p in [degree, place] if p])
+            if line:
+                main.append(Paragraph(html_msg(line), ParagraphStyle("edu", parent=s_p, spaceAfter=2)))
+            if dates:
+                main.append(Paragraph(html_msg(dates), s_meta))
+        main.append(Spacer(1, 6))
+
+    # Sidebar: Skills
+    skills = cv.get("skills", []) or []
+    if skills:
+        side.append(Paragraph("HABILIDADES", s_h))
+        if pro:
+            side.append(_chip_table(skills, max_width=side_w - 4))
+            side.append(Spacer(1, 8))
+        else:
+            side.append(Paragraph(html_msg(", ".join(skills)), s_small))
+            side.append(Spacer(1, 8))
+
+    # Sidebar: Idiomas
+    langs = cv.get("languages", []) or []
+    if langs:
+        side.append(Paragraph("IDIOMAS", s_h))
+        side.append(Paragraph(html_msg(", ".join(langs)), s_small))
+        side.append(Spacer(1, 8))
+
+    # Sidebar: Certs (PRO)
+    certs = (cv.get("certs", []) or []) if pro else []
+    if pro and certs:
+        side.append(Paragraph("CURSOS / CERTS", s_h))
+        li = "".join([f"<li>{html_msg(x)}</li>" for x in certs if _clean(x)])
+        side.append(Paragraph(f"<ul>{li}</ul>", ParagraphStyle("certs", parent=s_small, leftIndent=14, bulletIndent=0)))
+        side.append(Spacer(1, 8))
+
+    # Table de columnas
+    col_tbl = Table(
+        [[KeepTogether(main), KeepTogether(side)]],
+        colWidths=[main_w, side_w],
+        style=TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 0),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+            ("TOPPADDING", (0, 0), (-1, -1), 0),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+            ("LINEBEFORE", (1, 0), (1, 0), 0.6, colors.lightgrey),
+            ("LEFTPADDING", (1, 0), (1, 0), 10),
+        ])
+    )
+    story.append(col_tbl)
+
+    doc.build(story)
+    buf.seek(0)
+    return buf
+
+
+# ----------------------------
 # Telegram bot (webhook mode)
 # ----------------------------
 app_tg = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
-WELCOME = (
-    "👋 Bienvenido a *CVBot*\n\n"
+WELCOME_HTML = (
+    "👋 <b>Bienvenido a CVBot</b>\n\n"
     "Elegí un plan:\n\n"
-    "🆓 *CV GRATIS*\n"
+    "🆓 <b>CV GRATIS</b>\n"
     "• PDF simple y prolijo\n"
     "• Sin foto\n"
     "• 1 experiencia + 1 educación\n\n"
-    f"💎 *CV PRO* – ARS {PRO_PRICE_ARS}\n"
+    f"💎 <b>CV PRO</b> – ARS {PRO_PRICE_ARS}\n"
     "• Foto + diseño premium\n"
     "• Redacción más profesional (ATS-friendly)\n"
-    "• Hasta 3 experiencias + cursos/certificaciones\n\n"
-    "👉 Escribí: *GRATIS* o *PRO*"
+    f"• Hasta {PRO_MAX_EXPS} experiencias + cursos/certificaciones\n\n"
+    "👉 Escribí: <b>GRATIS</b> o <b>PRO</b>"
 )
 
 
@@ -545,17 +602,14 @@ def default_data():
         "linkedin": "",
         "title": "",
         "profile_a": "",
-        "strengths": "",     # PRO
+        "strengths": "",
         "profile_b": "",
         "photo_b64": "",
-
         "experiences": [],
         "education": [],
-        "certs": [],         # PRO
-
+        "certs": [],
         "skills": [],
         "languages": [],
-
         "_cur_exp": {},
         "_cur_edu": {},
     }
@@ -565,7 +619,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tg_uid = update.effective_user.id
     chat_id = update.effective_chat.id
     upsert_user(tg_uid, chat_id, plan="none", step="choose_plan", data=default_data())
-    await update.message.reply_text(WELCOME, parse_mode="Markdown")
+    await update.message.reply_text(WELCOME_HTML, parse_mode="HTML", disable_web_page_preview=True)
 
 
 async def cmd_cv(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -603,7 +657,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = get_user(tg_uid)
     if not u:
         upsert_user(tg_uid, chat_id, plan="none", step="choose_plan", data=default_data())
-        await update.message.reply_text(WELCOME, parse_mode="Markdown")
+        await update.message.reply_text(WELCOME_HTML, parse_mode="HTML", disable_web_page_preview=True)
         return
 
     plan = u["plan"]
@@ -617,16 +671,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             plan = "free"
             step = "name"
             upsert_user(tg_uid, chat_id, plan, step, data)
-            await update.message.reply_text("🆓 Elegiste *GRATIS*.\n\n👤 Nombre y apellido?", parse_mode="Markdown")
+            await update.message.reply_text("🆓 Elegiste GRATIS.\n\n👤 Nombre y apellido?")
             return
         if t in ("pro", "premium"):
             plan = "pro"
             step = "name"
             upsert_user(tg_uid, chat_id, plan, step, data)
-            await update.message.reply_text("💎 Elegiste *PRO*.\n\n👤 Nombre y apellido?", parse_mode="Markdown")
+            await update.message.reply_text("💎 Elegiste PRO.\n\n👤 Nombre y apellido?")
             return
 
-        await update.message.reply_text("Escribí *GRATIS* o *PRO*.", parse_mode="Markdown")
+        await update.message.reply_text("Escribí GRATIS o PRO.")
         return
 
     # datos base
@@ -649,7 +703,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         step = "linkedin" if plan == "pro" else "title"
         upsert_user(tg_uid, chat_id, plan, step, data)
         if plan == "pro":
-            await update.message.reply_text("🔗 Link LinkedIn/portfolio (o *SALTEAR*):", parse_mode="Markdown")
+            await update.message.reply_text("🔗 Link LinkedIn/portfolio (o SALTEAR):")
         else:
             await update.message.reply_text("🎯 ¿A qué te dedicás / qué trabajo buscás? (Ej: Electricista)")
         return
@@ -659,9 +713,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         step = "photo_wait"
         upsert_user(tg_uid, chat_id, plan, step, data)
         await update.message.reply_text(
-            "📸 Mandame tu *FOTO* ahora (tipo selfie carnet).\n\n"
-            "Tip: fondo claro, sin filtros.",
-            parse_mode="Markdown"
+            "📸 Mandame tu FOTO ahora (tipo selfie carnet).\n\nTip: fondo claro, sin filtros."
         )
         return
 
@@ -728,15 +780,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         step = "exp_bullets"
         upsert_user(tg_uid, chat_id, plan, step, data)
         if plan == "pro":
-            await update.message.reply_text(
-                "✅ 3–5 tareas/logros (separadas por ';')\n"
-                "Ej: Atención al cliente; Manejo de caja; Resolución de reclamos"
-            )
+            await update.message.reply_text("✅ 3–5 tareas/logros (separadas por ';')\nEj: Atención al cliente; Manejo de caja; Resolución de reclamos")
         else:
-            await update.message.reply_text(
-                "✅ 2–3 tareas (separadas por ';')\n"
-                "Ej: Atención al cliente; Caja; Reposición"
-            )
+            await update.message.reply_text("✅ 2–3 tareas (separadas por ';')\nEj: Atención al cliente; Caja; Reposición")
         return
 
     if step == "exp_bullets":
@@ -751,21 +797,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             bullets = bullets[:4]
 
         data["_cur_exp"]["bullets"] = bullets
-
-        # Guardar exp
         data["experiences"].append(data["_cur_exp"])
         data["_cur_exp"] = {}
 
-        # Limites / loop
         max_exps = PRO_MAX_EXPS if plan == "pro" else FREE_MAX_EXPS
-        if len(data["experiences"]) < max_exps:
-            if plan == "pro":
-                step = "exp_more"
-                upsert_user(tg_uid, chat_id, plan, step, data)
-                await update.message.reply_text("➕ ¿Querés agregar OTRA experiencia? (SI/NO)")
-                return
+        if len(data["experiences"]) < max_exps and plan == "pro":
+            step = "exp_more"
+            upsert_user(tg_uid, chat_id, plan, step, data)
+            await update.message.reply_text("➕ ¿Querés agregar OTRA experiencia? (SI/NO)")
+            return
 
-        # si no puede/ no quiere, pasamos a educación
         step = "edu_degree"
         upsert_user(tg_uid, chat_id, plan, step, data)
         max_edu = PRO_MAX_EDU if plan == "pro" else FREE_MAX_EDU
@@ -778,7 +819,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             upsert_user(tg_uid, chat_id, plan, step, data)
             await update.message.reply_text("🏢 Ok. Siguiente experiencia: ¿Puesto?")
             return
-        # NO / otro
         step = "edu_degree"
         upsert_user(tg_uid, chat_id, plan, step, data)
         max_edu = PRO_MAX_EDU if plan == "pro" else FREE_MAX_EDU
@@ -790,7 +830,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ----------------------------
     if step == "edu_degree":
         if _is_skip(text):
-            # PRO: cursos/certs; FREE: skills
             if plan == "pro":
                 step = "certs"
                 upsert_user(tg_uid, chat_id, plan, step, data)
@@ -822,14 +861,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data["_cur_edu"] = {}
 
         max_edu = PRO_MAX_EDU if plan == "pro" else FREE_MAX_EDU
-        if len(data["education"]) < max_edu:
-            if plan == "pro":
-                step = "edu_more"
-                upsert_user(tg_uid, chat_id, plan, step, data)
-                await update.message.reply_text("➕ ¿Querés agregar OTRA educación? (SI/NO)")
-                return
+        if len(data["education"]) < max_edu and plan == "pro":
+            step = "edu_more"
+            upsert_user(tg_uid, chat_id, plan, step, data)
+            await update.message.reply_text("➕ ¿Querés agregar OTRA educación? (SI/NO)")
+            return
 
-        # next
         if plan == "pro":
             step = "certs"
             upsert_user(tg_uid, chat_id, plan, step, data)
@@ -908,9 +945,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             data["languages"] = _as_list_from_commas(text)
             data["languages"] = data["languages"][: (PRO_MAX_LANGS if plan == "pro" else FREE_MAX_LANGS)]
 
-        # ----------------------------
         # FREE: entrega inmediata + upsell
-        # ----------------------------
         if plan == "free":
             cv = {
                 "name": data["name"],
@@ -924,31 +959,38 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "languages": data["languages"][:FREE_MAX_LANGS],
             }
             pdf = build_pdf_bytes(cv, pro=False)
-            pdf.seek(0)
+            filename = f"CV_FREE_{data['name'].replace(' ', '_')}.pdf"
 
             await update.message.reply_document(
-                document=InputFile(pdf, filename=f"CV_FREE_{data['name'].replace(' ', '_')}.pdf"),
-                caption="🆓 Listo. Acá tenés tu CV GRATIS (simple y prolijo)."
+                document=InputFile(pdf, filename=filename),
+                caption="🆓 Listo. Acá tenés tu CV GRATIS."
             )
 
-            # Upsell que convierte
             await update.message.reply_text(
-                f"Si querés que se vea *mucho más profesional* (foto + diseño premium + hasta {PRO_MAX_EXPS} experiencias + cursos), "
-                f"escribí *PRO*.\n\n💎 Valor: ARS {PRO_PRICE_ARS}",
-                parse_mode="Markdown"
+                f"Si querés que se vea <b>mucho más profesional</b> (foto + diseño premium + más experiencias + cursos), escribí <b>PRO</b>.\n\n"
+                f"💎 Valor: ARS {PRO_PRICE_ARS}",
+                parse_mode="HTML"
             )
 
             upsert_user(tg_uid, chat_id, plan="none", step="choose_plan", data=default_data())
             return
 
-        # ----------------------------
         # PRO: crear pago y esperar webhook
-        # ----------------------------
-        pref = mp_create_preference(tg_uid)
+        try:
+            pref = await asyncio.to_thread(mp_create_preference, tg_uid)
+        except Exception as e:
+            print("mp_create_preference error:", repr(e))
+            await update.message.reply_text(
+                "❌ No pude generar el link de pago (Mercado Pago no respondió o devolvió error).\n"
+                "Probá de nuevo en 1 minuto con /cv."
+            )
+            upsert_user(tg_uid, chat_id, plan="none", step="choose_plan", data=default_data())
+            return
+
         preference_id = pref.get("id")
         init_point = pref.get("init_point") or pref.get("sandbox_init_point")
         if not preference_id or not init_point:
-            await update.message.reply_text("Error creando el link de pago. Probá de nuevo con /cv.")
+            await update.message.reply_text("❌ Error creando el link de pago. Probá de nuevo con /cv.")
             upsert_user(tg_uid, chat_id, plan="none", step="choose_plan", data=default_data())
             return
 
@@ -958,19 +1000,18 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         upsert_user(tg_uid, chat_id, plan, step, data)
 
         msg = (
-            "💎 *CV PRO listo para generar*\n\n"
-            f"Valor: *ARS {PRO_PRICE_ARS}*\n"
+            "💎 <b>CV PRO listo para generar</b>\n\n"
+            f"Valor: <b>ARS {PRO_PRICE_ARS}</b>\n"
             "Pagá en este link y cuando se acredite te mando el PDF automáticamente:\n"
-            f"{init_point}\n\n"
+            f"{html_msg(init_point)}\n\n"
             "⏳ Quedate en este chat. Apenas Mercado Pago confirme el pago, te llega el PDF."
         )
         if ENABLE_TEST_PAYMENTS:
-            msg += "\n\n🧪 *Modo test activo:* escribí *TEST* para simular pago aprobado."
-        await update.message.reply_text(msg, parse_mode="Markdown")
+            msg += "\n\n🧪 <b>Modo test activo:</b> escribí <b>TEST</b> para simular pago aprobado."
+        await update.message.reply_text(msg, parse_mode="HTML", disable_web_page_preview=True)
         return
 
     if step == "waiting_payment":
-        # ✅ MODO TEST
         if ENABLE_TEST_PAYMENTS and text.strip().lower() in ("test", "aprobar", "approve"):
             u2 = get_user(tg_uid)
             if not u2:
@@ -995,7 +1036,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             }
 
             pdf = build_pdf_bytes(cv, pro=True)
-            pdf.seek(0)
             filename = f"CV_PRO_{data_db['name'].replace(' ', '_')}.pdf"
 
             await update.message.reply_text("✅ TEST: pago simulado como aprobado. Te envío tu CV PRO 😎")
@@ -1011,7 +1051,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(msg)
         return
 
-    # fallback
     await update.message.reply_text("Usá /cv para empezar de nuevo.")
 
 
@@ -1034,8 +1073,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     photo = update.message.photo[-1]
     file = await photo.get_file()
     photo_bytes = await file.download_as_bytearray()
-
-    # Guardar como base64 (string) para JSON
     data["photo_b64"] = base64.b64encode(bytes(photo_bytes)).decode("utf-8")
 
     step = "title"
@@ -1060,15 +1097,10 @@ api = FastAPI()
 
 @api.get("/reset-db")
 async def reset_db(secret: str = ""):
-    """
-    ⚠️ No lo dejes abierto en producción.
-    Llamá /reset-db?secret=TU_ADMIN_SECRET
-    """
     if not ADMIN_SECRET:
         return {"ok": False, "error": "ADMIN_SECRET no configurado"}
     if secret != ADMIN_SECRET:
         raise HTTPException(status_code=403, detail="Forbidden")
-
     try:
         if os.path.exists(DB_PATH):
             os.remove(DB_PATH)
@@ -1151,15 +1183,18 @@ async def mp_webhook(request: Request):
     if not payment_id:
         return {"ok": True, "ignored": True}
 
-    pay = mp_get_payment(payment_id)
-    status = pay.get("status")
+    try:
+        pay = await asyncio.to_thread(mp_get_payment, payment_id)
+    except Exception as e:
+        print("mp_get_payment error:", repr(e))
+        return {"ok": True, "ignored": True}
 
+    status = pay.get("status")
     external_ref = str(pay.get("external_reference") or "").strip()
     if not external_ref.isdigit():
         return {"ok": True, "ignored": True}
 
     tg_uid = int(external_ref)
-
     last = latest_payment_for_user(tg_uid)
     if not last:
         return {"ok": True, "ignored": True}
@@ -1190,7 +1225,6 @@ async def mp_webhook(request: Request):
         }
 
         pdf = build_pdf_bytes(cv, pro=True)
-        pdf.seek(0)
         filename = f"CV_PRO_{data['name'].replace(' ', '_')}.pdf"
 
         await app_tg.bot.send_message(chat_id=chat_id, text="✅ Pago confirmado. Te envío tu CV PRO 😎")
