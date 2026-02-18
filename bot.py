@@ -20,15 +20,14 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import cm
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.platypus import (
-    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
-)
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
+
 
 # ----------------------------
 # ENV
 # ----------------------------
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-TELEGRAM_WEBHOOK_SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip()  # una string random
+TELEGRAM_WEBHOOK_SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip()  # string random
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").strip()  # ej: https://tuapp.onrender.com
 
 ENABLE_TEST_PAYMENTS = os.getenv("ENABLE_TEST_PAYMENTS", "0").strip() == "1"
@@ -42,6 +41,13 @@ DB_PATH = os.getenv("DB_PATH", "app.db")
 # Seguridad: reset-db
 ADMIN_SECRET = os.getenv("ADMIN_SECRET", "").strip()
 
+# WhatsApp Cloud API
+WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN", "").strip()
+WHATSAPP_PHONE_NUMBER_ID = os.getenv("WHATSAPP_PHONE_NUMBER_ID", "").strip()
+WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN", "").strip()
+# Para SANDBOX/test: forzar que las respuestas vayan a tu número whitelist (sin +)
+WHATSAPP_TEST_ALLOWED_TO = os.getenv("WHATSAPP_TEST_ALLOWED_TO", "").strip()
+
 # Limits (FREE vs PRO)
 FREE_MAX_EXPS = 1
 FREE_MAX_EDU = 1
@@ -54,6 +60,7 @@ PRO_MAX_SKILLS = 20
 PRO_MAX_LANGS = 6
 PRO_MAX_CERTS = 4
 
+
 if not TELEGRAM_BOT_TOKEN:
     raise SystemExit("Falta TELEGRAM_BOT_TOKEN")
 if not PUBLIC_BASE_URL:
@@ -61,17 +68,13 @@ if not PUBLIC_BASE_URL:
 if not MP_ACCESS_TOKEN:
     raise SystemExit("Falta MP_ACCESS_TOKEN")
 
-# ----------------------------
-# WhatsApp Cloud API (ENV)
-# ----------------------------
-WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN", "").strip()
-WHATSAPP_PHONE_NUMBER_ID = os.getenv("WHATSAPP_PHONE_NUMBER_ID", "").strip()
-WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN", "").strip()
 
-
+# ----------------------------
+# WhatsApp send helper
+# ----------------------------
 def wa_send_text(to: str, text: str) -> None:
     """
-    to: número en formato internacional sin '+' (ej: '5493764xxxxxx')
+    to: número en formato internacional SIN '+' (ej: '5493764xxxxxx' o '543764156089')
     """
     if not WHATSAPP_TOKEN or not WHATSAPP_PHONE_NUMBER_ID:
         raise RuntimeError("Faltan WHATSAPP_TOKEN o WHATSAPP_PHONE_NUMBER_ID")
@@ -319,10 +322,9 @@ def mp_get_payment(payment_id: str) -> Dict[str, Any]:
 # ----------------------------
 # PDF builder (ATS elegante)
 # ----------------------------
-ACCENT = colors.HexColor("#1F2A37")   # premium dark gray-blue
+ACCENT = colors.HexColor("#1F2A37")
 TEXT = colors.HexColor("#111827")
 MUTED = colors.HexColor("#4B5563")
-LINE = colors.HexColor("#E5E7EB")
 
 
 def build_pdf_bytes(cv: dict, pro: bool) -> BytesIO:
@@ -367,7 +369,6 @@ def build_pdf_bytes(cv: dict, pro: bool) -> BytesIO:
         textColor=MUTED,
         spaceAfter=10,
     )
-
     s_section = ParagraphStyle(
         "section",
         parent=styles["Normal"],
@@ -378,7 +379,6 @@ def build_pdf_bytes(cv: dict, pro: bool) -> BytesIO:
         spaceBefore=10,
         spaceAfter=6,
     )
-
     s_body = ParagraphStyle(
         "body",
         parent=styles["Normal"],
@@ -388,7 +388,6 @@ def build_pdf_bytes(cv: dict, pro: bool) -> BytesIO:
         textColor=TEXT,
         spaceAfter=6,
     )
-
     s_meta = ParagraphStyle(
         "meta",
         parent=styles["Normal"],
@@ -398,7 +397,6 @@ def build_pdf_bytes(cv: dict, pro: bool) -> BytesIO:
         textColor=MUTED,
         spaceAfter=3,
     )
-
     s_bul = ParagraphStyle(
         "bul",
         parent=styles["Normal"],
@@ -409,7 +407,6 @@ def build_pdf_bytes(cv: dict, pro: bool) -> BytesIO:
         leftIndent=14,
         spaceAfter=6,
     )
-
     s_skill = ParagraphStyle(
         "skill",
         parent=styles["Normal"],
@@ -422,7 +419,6 @@ def build_pdf_bytes(cv: dict, pro: bool) -> BytesIO:
 
     story = []
 
-    # Header
     name = _clean(cv.get("name", "")) or "Nombre Apellido"
     title = _clean(cv.get("title", ""))
     profile = _clean(cv.get("profile", ""))
@@ -436,7 +432,6 @@ def build_pdf_bytes(cv: dict, pro: bool) -> BytesIO:
         contact_parts.append(_clean(cv["linkedin"]))
     contact_line = "  •  ".join(contact_parts)
 
-    # Foto PRO opcional
     photo_flowable = None
     if pro:
         b64 = _clean(cv.get("photo_b64", ""))
@@ -470,18 +465,15 @@ def build_pdf_bytes(cv: dict, pro: bool) -> BytesIO:
     else:
         story.extend(header_left)
 
-    # Divider
     story.append(Spacer(1, 4))
     story.append(Table([[""]], colWidths=[doc.width], rowHeights=[1.3],
                        style=TableStyle([("BACKGROUND", (0, 0), (-1, -1), ACCENT)])))
     story.append(Spacer(1, 10))
 
-    # Perfil
     if profile:
         story.append(Paragraph("PERFIL", s_section))
         story.append(Paragraph(html_msg(profile), s_body))
 
-    # Experiencia
     exps = cv.get("experiences", []) or []
     if exps:
         story.append(Paragraph("EXPERIENCIA", s_section))
@@ -493,11 +485,7 @@ def build_pdf_bytes(cv: dict, pro: bool) -> BytesIO:
             head_parts = [p for p in [role, company] if p]
             head = " — ".join(head_parts) if head_parts else "Experiencia"
 
-            head_style = ParagraphStyle(
-                "exphead", parent=s_body,
-                fontName="Helvetica-Bold",
-                spaceAfter=2
-            )
+            head_style = ParagraphStyle("exphead", parent=s_body, fontName="Helvetica-Bold", spaceAfter=2)
             story.append(Paragraph(html_msg(head), head_style))
 
             if dates:
@@ -510,7 +498,6 @@ def build_pdf_bytes(cv: dict, pro: bool) -> BytesIO:
 
             story.append(Spacer(1, 4))
 
-    # Educación
     edu = cv.get("education", []) or []
     if edu:
         story.append(Paragraph("EDUCACIÓN", s_section))
@@ -527,7 +514,6 @@ def build_pdf_bytes(cv: dict, pro: bool) -> BytesIO:
                 story.append(Paragraph(html_msg(dates), s_meta))
             story.append(Spacer(1, 2))
 
-    # Cursos/Certs (PRO)
     certs = (cv.get("certs", []) or []) if pro else []
     certs = [c for c in certs if _clean(c)]
     if pro and certs:
@@ -535,11 +521,9 @@ def build_pdf_bytes(cv: dict, pro: bool) -> BytesIO:
         li = "".join([f"<li>{html_msg(x)}</li>" for x in certs[:8]])
         story.append(Paragraph(f"<ul>{li}</ul>", s_bul))
 
-    # Habilidades (LISTA 2 columnas)
     skills = [s for s in (cv.get("skills", []) or []) if _clean(s)]
     if skills:
         story.append(Paragraph("HABILIDADES", s_section))
-
         rows = bullets_columns(skills, ncols=2)
         data_tbl = []
         for a, b in rows:
@@ -558,7 +542,6 @@ def build_pdf_bytes(cv: dict, pro: bool) -> BytesIO:
         story.append(tbl)
         story.append(Spacer(1, 4))
 
-    # Idiomas
     langs = [l for l in (cv.get("languages", []) or []) if _clean(l)]
     if langs:
         story.append(Paragraph("IDIOMAS", s_section))
@@ -671,7 +654,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     step = u["step"]
     data = json.loads(u["data_json"])
 
-    # 0) elegir plan
     if step == "choose_plan":
         t = text.lower()
         if t in ("gratis", "free"):
@@ -686,11 +668,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             upsert_user(tg_uid, chat_id, plan, step, data)
             await update.message.reply_text("💎 Elegiste PRO.\n\n👤 Nombre y apellido?")
             return
-
         await update.message.reply_text("Escribí GRATIS o PRO.")
         return
 
-    # datos base
     if step == "name":
         data["name"] = text
         step = "city"
@@ -763,9 +743,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"🏢 Experiencia (hasta {PRO_MAX_EXPS}): ¿Puesto? (Ej: Vendedor)")
         return
 
-    # ----------------------------
-    # EXPERIENCIA (loop)
-    # ----------------------------
     if step == "exp_role":
         data["_cur_exp"] = {"role": text}
         step = "exp_company"
@@ -796,10 +773,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Mandame al menos 1 (separadas por ';').")
             return
 
-        if plan == "pro":
-            bullets = _rewrite_bullets_pro(bullets)[:6]
-        else:
-            bullets = bullets[:4]
+        bullets = _rewrite_bullets_pro(bullets)[:6] if plan == "pro" else bullets[:4]
 
         data["_cur_exp"]["bullets"] = bullets
         data["experiences"].append(data["_cur_exp"])
@@ -830,9 +804,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"🎓 Educación (máx {max_edu}): ¿Qué estudiaste? (o SALTEAR)")
         return
 
-    # ----------------------------
-    # EDUCACIÓN (loop)
-    # ----------------------------
     if step == "edu_degree":
         if _is_skip(text):
             if plan == "pro":
@@ -893,9 +864,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"🏅 Cursos/Certificaciones (hasta {PRO_MAX_CERTS})\nMandá 1 (o SALTEAR):")
         return
 
-    # ----------------------------
-    # CERTS (solo PRO)
-    # ----------------------------
     if plan == "pro" and step == "certs":
         if _is_skip(text):
             step = "skills"
@@ -930,9 +898,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🛠️ Habilidades (coma) o SALTEAR")
         return
 
-    # ----------------------------
-    # SKILLS + LANGS
-    # ----------------------------
     if step == "skills":
         if _is_skip(text):
             data["skills"] = []
@@ -952,7 +917,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             data["languages"] = _as_list_from_commas(text)
             data["languages"] = data["languages"][: (PRO_MAX_LANGS if plan == "pro" else FREE_MAX_LANGS)]
 
-        # FREE: entrega inmediata
         if plan == "free":
             cv = {
                 "name": data["name"],
@@ -982,7 +946,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             upsert_user(tg_uid, chat_id, plan="none", step="choose_plan", data=default_data())
             return
 
-        # PRO: crear pago (NO bloquear event loop)
         try:
             pref = await asyncio.to_thread(mp_create_preference, tg_uid)
         except Exception as e:
@@ -1024,7 +987,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
 
             data_db = json.loads(u2["data_json"])
-
             cv = {
                 "name": data_db["name"],
                 "city": data_db["city"],
@@ -1085,7 +1047,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✅ Foto guardada.\n🎯 ¿A qué te dedicás / qué trabajo buscás? (Ej: Electricista)")
 
 
-# handlers
 app_tg.add_handler(CommandHandler("start", cmd_start))
 app_tg.add_handler(CommandHandler("cv", cmd_cv))
 app_tg.add_handler(CommandHandler("status", cmd_status))
@@ -1101,18 +1062,20 @@ app_tg.add_error_handler(on_error)
 api = FastAPI()
 
 
-# ✅ WhatsApp webhook verify (CORREGIDO para hub.*)
-@api.get("/whatsapp/webhook")
+# ----------------------------
+# WhatsApp Webhook (VERIFY + POST)
+# ----------------------------
+@api.get("/whatsapp/webhook", response_class=PlainTextResponse)
 async def whatsapp_webhook_verify(
-    hub_mode: str = Query(default="", alias="hub.mode"),
-    hub_challenge: str = Query(default="", alias="hub.challenge"),
-    hub_verify_token: str = Query(default="", alias="hub.verify_token"),
+    hub_mode: str = Query("", alias="hub.mode"),
+    hub_challenge: str = Query("", alias="hub.challenge"),
+    hub_verify_token: str = Query("", alias="hub.verify_token"),
 ):
     if not WHATSAPP_VERIFY_TOKEN:
         raise HTTPException(status_code=500, detail="WHATSAPP_VERIFY_TOKEN no configurado")
 
     if hub_mode == "subscribe" and hub_verify_token == WHATSAPP_VERIFY_TOKEN:
-        return PlainTextResponse(content=str(hub_challenge), status_code=200)
+        return hub_challenge  # texto plano
 
     raise HTTPException(status_code=403, detail="Forbidden")
 
@@ -1133,9 +1096,11 @@ def _wa_extract_text(payload: dict):
         m0 = messages[0]
         from_number = str(m0.get("from") or "").strip()
         mtype = m0.get("type")
+
         if mtype == "text":
             text = ((m0.get("text") or {}).get("body") or "").strip()
             return from_number, text
+
         return from_number, ""
     except Exception:
         return None, None
@@ -1144,27 +1109,38 @@ def _wa_extract_text(payload: dict):
 @api.post("/whatsapp/webhook")
 async def whatsapp_webhook(request: Request):
     payload = await request.json()
+    print("WA WEBHOOK PAYLOAD:", json.dumps(payload, ensure_ascii=False)[:1000])
+
     from_number, text = _wa_extract_text(payload)
 
+    # responder 200 rápido siempre
     if not from_number:
         return {"ok": True}
 
-    # TEST rápido
+    # FIX sandbox: si "from" viene raro en tests, respondemos al número whitelist
+    to_send = from_number
+    if WHATSAPP_TEST_ALLOWED_TO and to_send != WHATSAPP_TEST_ALLOWED_TO:
+        print("WA override to_send:", {"from": from_number, "allowed": WHATSAPP_TEST_ALLOWED_TO})
+        to_send = WHATSAPP_TEST_ALLOWED_TO
+
     if (text or "").strip().lower() == "ping":
         try:
-            await asyncio.to_thread(wa_send_text, from_number, "pong ✅ (WhatsApp webhook OK)")
+            await asyncio.to_thread(wa_send_text, to_send, "pong ✅ (WhatsApp webhook OK)")
         except Exception as e:
             print("wa_send_text error:", repr(e))
         return {"ok": True}
 
     try:
-        await asyncio.to_thread(wa_send_text, from_number, "Te leí ✅. Decime GRATIS o PRO para arrancar.")
+        await asyncio.to_thread(wa_send_text, to_send, "Te leí ✅. Decime GRATIS o PRO para arrancar.")
     except Exception as e:
         print("wa_send_text error:", repr(e))
 
     return {"ok": True}
 
 
+# ----------------------------
+# Admin reset DB
+# ----------------------------
 @api.get("/reset-db")
 async def reset_db(secret: str = ""):
     if not ADMIN_SECRET:
@@ -1179,6 +1155,9 @@ async def reset_db(secret: str = ""):
         return {"ok": False, "error": str(e)}
 
 
+# ----------------------------
+# Lifespan: Telegram webhook
+# ----------------------------
 @api.on_event("startup")
 async def _startup():
     init_db()
@@ -1199,6 +1178,9 @@ async def _shutdown():
     await app_tg.shutdown()
 
 
+# ----------------------------
+# Simple endpoints
+# ----------------------------
 @api.get("/")
 async def root():
     return {"ok": True, "message": "CVBot online. Usá /health"}
@@ -1224,6 +1206,9 @@ async def pending():
     return {"pending": True}
 
 
+# ----------------------------
+# Telegram webhook endpoint
+# ----------------------------
 @api.post("/telegram/webhook/{secret}")
 async def telegram_webhook(secret: str, request: Request):
     if secret != TELEGRAM_WEBHOOK_SECRET:
@@ -1235,6 +1220,9 @@ async def telegram_webhook(secret: str, request: Request):
     return {"ok": True}
 
 
+# ----------------------------
+# MercadoPago webhook
+# ----------------------------
 @api.post("/mp/webhook")
 async def mp_webhook(request: Request):
     payload = await request.json()
