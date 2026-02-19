@@ -183,12 +183,12 @@ def _as_list_from_commas(text: str):
 
 def _is_yes(text: str) -> bool:
     t = _clean(text).lower()
-    return t in ("si", "sí", "s", "yes", "y", "ok", "dale")
+    return t in ("si", "sí", "s", "yes", "y", "ok", "dale", "de una", "okey")
 
 
 def _is_skip(text: str) -> bool:
     t = _clean(text).lower()
-    return t in ("saltear", "skip", "n/a", "-", "x", "ninguno", "ninguna", "no")
+    return t in ("saltear", "skip", "n/a", "-", "x", "ninguno", "ninguna", "no", "na")
 
 
 def html_msg(s: str) -> str:
@@ -213,6 +213,16 @@ def bullets_columns(items, ncols=2):
     return rows
 
 
+def parse_bullets(text: str):
+    """
+    Acepta:
+    - separado por ';'
+    - o una por línea (saltos de línea)
+    """
+    raw = (text or "").replace("\n", ";")
+    return [b.strip() for b in raw.split(";") if b.strip()]
+
+
 # ----------------------------
 # Copy / textos (FREE vs PRO)
 # ----------------------------
@@ -229,6 +239,7 @@ def profile_pro(data: dict) -> str:
     a = _clean(data.get("profile_a", ""))
     b = _clean(data.get("profile_b", ""))
     strengths = _clean(data.get("strengths", ""))
+
     base = f"{title}. "
     if a:
         base += f"Experiencia en {a}. "
@@ -267,7 +278,6 @@ def mp_create_preference(user_key: str) -> Dict[str, Any]:
             "currency_id": "ARS",
             "unit_price": PRO_PRICE_ARS
         }],
-        # importante: guardamos user_key acá
         "external_reference": str(user_key),
         "notification_url": f"{PUBLIC_BASE_URL}/mp/webhook",
         "auto_return": "approved",
@@ -341,6 +351,7 @@ def build_pdf_bytes(cv: dict, pro: bool) -> BytesIO:
     title = _clean(cv.get("title", ""))
     profile = _clean(cv.get("profile", ""))
 
+    # header contact line (corto)
     contact_parts = []
     if _clean(cv.get("city", "")):
         contact_parts.append(_clean(cv["city"]))
@@ -388,10 +399,29 @@ def build_pdf_bytes(cv: dict, pro: bool) -> BytesIO:
                        style=TableStyle([("BACKGROUND", (0, 0), (-1, -1), ACCENT)])))
     story.append(Spacer(1, 10))
 
+    # PERFIL
     if profile:
         story.append(Paragraph("PERFIL", s_section))
         story.append(Paragraph(html_msg(profile), s_body))
 
+    # DATOS PERSONALES (más completo)
+    dp = []
+    if _clean(cv.get("dni", "")):
+        dp.append(f"DNI: {_clean(cv.get('dni'))}")
+    if _clean(cv.get("birth_year", "")):
+        dp.append(f"Año de nacimiento: {_clean(cv.get('birth_year'))}")
+    if _clean(cv.get("birth_place", "")):
+        dp.append(f"Lugar de nacimiento: {_clean(cv.get('birth_place'))}")
+    if _clean(cv.get("marital_status", "")):
+        dp.append(f"Estado civil: {_clean(cv.get('marital_status'))}")
+    if _clean(cv.get("address", "")):
+        dp.append(f"Dirección: {_clean(cv.get('address'))}")
+
+    if dp:
+        story.append(Paragraph("DATOS PERSONALES", s_section))
+        story.append(Paragraph(html_msg(" • ".join(dp)), s_body))
+
+    # EXPERIENCIA
     exps = cv.get("experiences", []) or []
     if exps:
         story.append(Paragraph("EXPERIENCIA", s_section))
@@ -416,6 +446,7 @@ def build_pdf_bytes(cv: dict, pro: bool) -> BytesIO:
 
             story.append(Spacer(1, 4))
 
+    # EDUCACIÓN
     edu = cv.get("education", []) or []
     if edu:
         story.append(Paragraph("EDUCACIÓN", s_section))
@@ -432,6 +463,7 @@ def build_pdf_bytes(cv: dict, pro: bool) -> BytesIO:
                 story.append(Paragraph(html_msg(dates), s_meta))
             story.append(Spacer(1, 2))
 
+    # CERTS (PRO)
     certs = (cv.get("certs", []) or []) if pro else []
     certs = [c for c in certs if _clean(c)]
     if pro and certs:
@@ -439,6 +471,7 @@ def build_pdf_bytes(cv: dict, pro: bool) -> BytesIO:
         li = "".join([f"<li>{html_msg(x)}</li>" for x in certs[:8]])
         story.append(Paragraph(f"<ul>{li}</ul>", s_bul))
 
+    # SKILLS
     skills = [s for s in (cv.get("skills", []) or []) if _clean(s)]
     if skills:
         story.append(Paragraph("HABILIDADES", s_section))
@@ -460,6 +493,7 @@ def build_pdf_bytes(cv: dict, pro: bool) -> BytesIO:
         story.append(tbl)
         story.append(Spacer(1, 4))
 
+    # LANGS
     langs = [l for l in (cv.get("languages", []) or []) if _clean(l)]
     if langs:
         story.append(Paragraph("IDIOMAS", s_section))
@@ -535,26 +569,42 @@ def wa_send_pdf(to: str, pdf_bytes: bytes, filename: str, caption: str = "") -> 
 # Shared CV Flow
 # ----------------------------
 WELCOME_TEXT = (
-    "👋 Bienvenido a CVBot\n\n"
-    "Elegí un plan:\n\n"
-    "🆓 CV GRATIS\n"
-    "• PDF simple y prolijo\n"
+    "👋 ¡Buenas! Soy *CVBot* 😄\n"
+    "Te armo tu currículum en minutos, listo para mandar por WhatsApp/Telegram.\n\n"
+    "📌 ¿Cómo funciona?\n"
+    "1) Te hago unas preguntas cortitas\n"
+    "2) Con eso te genero un PDF prolijo\n"
+    "3) Si elegís PRO, pagás y te lo mando automático 💸📄\n\n"
+    "🆓 *CV GRATIS*\n"
+    "• Simple y prolijo (ideal para salir del paso)\n"
     "• Sin foto\n"
-    "• 1 experiencia + 1 educación\n\n"
-    f"💎 CV PRO – ARS {PRO_PRICE_ARS}\n"
-    "• Foto + diseño premium\n"
-    "• Redacción más profesional (ATS-friendly)\n"
-    f"• Hasta {PRO_MAX_EXPS} experiencias + cursos/certificaciones\n\n"
-    "👉 Escribí: GRATIS o PRO"
+    f"• Hasta {FREE_MAX_EXPS} experiencia + {FREE_MAX_EDU} educación\n\n"
+    f"💎 *CV PRO* – *$ {PRO_PRICE_ARS} pesos*\n"
+    "• Con foto (opcional) + diseño más lindo\n"
+    "• Texto más profesional (ATS-friendly)\n"
+    f"• Hasta {PRO_MAX_EXPS} experiencias + {PRO_MAX_EDU} educaciones\n"
+    f"• Cursos/certificaciones (hasta {PRO_MAX_CERTS})\n\n"
+    "👉 Escribime una opción para arrancar:\n"
+    "*GRATIS* o *PRO*"
 )
 
 
 def default_data():
     return {
+        # datos personales
         "name": "",
+        "dni": "",
+        "birth_year": "",
+        "birth_place": "",
+        "marital_status": "",
+        "address": "",
+
+        # contacto
         "city": "",
         "contact": "",
         "linkedin": "",
+
+        # CV
         "title": "",
         "profile_a": "",
         "strengths": "",
@@ -602,40 +652,118 @@ async def process_text_message(
             plan = "free"
             step = "name"
             upsert_conv(user_key, channel, chat_id, plan, step, data)
-            await send_text("🆓 Elegiste GRATIS.\n\n👤 Nombre y apellido?")
+            await send_text(
+                "🆓 Dale, vamos con *GRATIS* 🙌\n\n"
+                "Arrancamos tranqui. Primero:\n"
+                "👤 Pasame tu *Nombre y Apellido*\n"
+                "Ej: *Juan Pérez*"
+            )
             return
         if t in ("pro", "premium"):
             plan = "pro"
             step = "name"
             upsert_conv(user_key, channel, chat_id, plan, step, data)
-            await send_text("💎 Elegiste PRO.\n\n👤 Nombre y apellido?")
+            await send_text(
+                "💎 De una, vamos con *PRO* 😎\n\n"
+                "Arrancamos. Primero:\n"
+                "👤 Pasame tu *Nombre y Apellido*\n"
+                "Ej: *Juan Pérez*"
+            )
             return
-        await send_text("Escribí GRATIS o PRO.")
+        await send_text("👉 Escribime *GRATIS* o *PRO* para arrancar.")
         return
 
-    # datos base
+    # ----------------------------
+    # DATOS PERSONALES (más completo)
+    # ----------------------------
     if step == "name":
         data["name"] = text
-        step = "city"
+        step = "dni"
         upsert_conv(user_key, channel, chat_id, plan, step, data)
-        await send_text("📍 Ciudad / Provincia?")
+        await send_text(
+            "🪪 Ahora el *DNI* (si no querés ponerlo, escribí *SALTEAR*)\n"
+            "Ej: *40.123.456*"
+        )
         return
 
+    if step == "dni":
+        data["dni"] = "" if _is_skip(text) else text
+        step = "birth_year"
+        upsert_conv(user_key, channel, chat_id, plan, step, data)
+        await send_text(
+            "🎂 ¿En qué *año naciste*?\n"
+            "Ej: *1999*"
+        )
+        return
+
+    if step == "birth_year":
+        data["birth_year"] = "" if _is_skip(text) else text
+        step = "birth_place"
+        upsert_conv(user_key, channel, chat_id, plan, step, data)
+        await send_text(
+            "🗺️ Lugar de nacimiento (opcional)\n"
+            "Ej: *Posadas, Misiones* — o *SALTEAR*"
+        )
+        return
+
+    if step == "birth_place":
+        data["birth_place"] = "" if _is_skip(text) else text
+        step = "marital_status"
+        upsert_conv(user_key, channel, chat_id, plan, step, data)
+        await send_text(
+            "💍 Estado civil (opcional)\n"
+            "Ej: *Soltero / Casado / Unión convivencial* — o *SALTEAR*"
+        )
+        return
+
+    if step == "marital_status":
+        data["marital_status"] = "" if _is_skip(text) else text
+        step = "address"
+        upsert_conv(user_key, channel, chat_id, plan, step, data)
+        await send_text(
+            "🏠 Dirección (opcional)\n"
+            "Ej: *Av. Mitre 1234* — o *SALTEAR*"
+        )
+        return
+
+    if step == "address":
+        data["address"] = "" if _is_skip(text) else text
+        step = "city"
+        upsert_conv(user_key, channel, chat_id, plan, step, data)
+        await send_text(
+            "📍 ¿Dónde vivís? (Ciudad / Provincia)\n"
+            "Ej: *Posadas, Misiones*"
+        )
+        return
+
+    # ----------------------------
+    # CONTACTO + (PRO) LINKEDIN + FOTO
+    # ----------------------------
     if step == "city":
         data["city"] = text
         step = "contact"
         upsert_conv(user_key, channel, chat_id, plan, step, data)
-        await send_text("📞 Teléfono y email (una línea):")
+        await send_text(
+            "📞 Pasame *teléfono + email* en una línea\n"
+            "Ej: *3764 000000 — juanperez@gmail.com*"
+        )
         return
 
     if step == "contact":
         data["contact"] = text
         step = "linkedin" if plan == "pro" else "title"
         upsert_conv(user_key, channel, chat_id, plan, step, data)
+
         if plan == "pro":
-            await send_text("🔗 Link LinkedIn/portfolio (o SALTEAR):")
+            await send_text(
+                "🔗 LinkedIn / Portfolio (opcional)\n"
+                "Ej: *linkedin.com/in/juanperez* — o *SALTEAR*"
+            )
         else:
-            await send_text("🎯 ¿A qué te dedicás / qué trabajo buscás? (Ej: Electricista)")
+            await send_text(
+                "🎯 ¿Qué puesto buscás o a qué te dedicás?\n"
+                "Ej: *Repositor / Atención al cliente / Operario / Administrativa*"
+            )
         return
 
     if plan == "pro" and step == "linkedin":
@@ -643,25 +771,45 @@ async def process_text_message(
         step = "photo_wait"
         upsert_conv(user_key, channel, chat_id, plan, step, data)
         await send_text(
-            "📸 Mandame tu FOTO ahora (tipo selfie carnet).\n"
-            "Tip: fondo claro, sin filtros.\n\n"
-            "⚠️ En WhatsApp: mandá una foto como imagen normal."
+            "📸 Ahora mandame tu *FOTO* (opcional pero re suma).\n"
+            "Tip: fondo claro, sin filtros, tipo carnet.\n\n"
+            "Si no querés poner foto, escribí *SALTEAR*."
         )
         return
 
     # si está esperando foto pero le mandan texto:
     if plan == "pro" and step == "photo_wait":
-        await send_text("📸 Estoy esperando tu foto. Enviála y seguimos 🙂")
+        if _is_skip(text):
+            data["photo_b64"] = ""
+            step = "title"
+            upsert_conv(user_key, channel, chat_id, plan, step, data)
+            await send_text(
+                "✅ Listo, sin foto.\n\n"
+                "🎯 ¿A qué te dedicás / qué trabajo buscás?\n"
+                "Ej: *Electricista / Vendedor / Administrativa*"
+            )
+            return
+        await send_text("📸 Estoy esperando tu foto 🙂\nSi querés saltear, escribí *SALTEAR*.")
         return
 
+    # ----------------------------
+    # PERFIL / OBJETIVO
+    # ----------------------------
     if step == "title":
         data["title"] = text
         step = "profile_a"
         upsert_conv(user_key, channel, chat_id, plan, step, data)
+
         if plan == "pro":
-            await send_text("🧠 ¿En qué tenés experiencia? (1–2 cosas)\nEj: ventas, atención al cliente")
+            await send_text(
+                "🧠 ¿En qué tenés experiencia? (1–2 cosas)\n"
+                "Ej: *ventas, atención al cliente*"
+            )
         else:
-            await send_text("🧠 ¿Qué sabés hacer bien? (1 cosa)\nEj: atención al cliente")
+            await send_text(
+                "🧠 Decime *1 cosa* en la que sos bueno/a (así lo redacto lindo)\n"
+                "Ej: *atención al cliente*"
+            )
         return
 
     if step == "profile_a":
@@ -669,13 +817,20 @@ async def process_text_message(
         if plan == "pro":
             step = "strengths"
             upsert_conv(user_key, channel, chat_id, plan, step, data)
-            await send_text("⭐ 2–3 fortalezas (separadas por coma)\nEj: puntualidad, responsabilidad, aprendizaje rápido")
+            await send_text(
+                "⭐ 2–3 fortalezas separadas por coma\n"
+                "Ej: *responsable, puntual, aprendo rápido*"
+            )
         else:
             data["profile"] = profile_free(data)
             step = "exp_role"
             data["_cur_exp"] = {}
             upsert_conv(user_key, channel, chat_id, plan, step, data)
-            await send_text(f"🏢 Experiencia (máx {FREE_MAX_EXPS}): ¿Puesto? (Ej: Vendedor)")
+            await send_text(
+                f"🏢 Experiencia (máx {FREE_MAX_EXPS})\n\n"
+                "¿Qué *puesto* fue?\n"
+                "Ej: *Vendedor / Repositor / Cajero*"
+            )
         return
 
     if plan == "pro" and step == "strengths":
@@ -683,7 +838,10 @@ async def process_text_message(
         step = "profile_b"
         data["profile"] = profile_pro(data)
         upsert_conv(user_key, channel, chat_id, plan, step, data)
-        await send_text("🎯 ¿Qué tipo de trabajo buscás? (turnos, zona, full-time, remoto, etc.)")
+        await send_text(
+            "🎯 ¿Qué tipo de trabajo buscás?\n"
+            "Ej: *full-time, turno mañana, cerca del centro, remoto, etc.*"
+        )
         return
 
     if plan == "pro" and step == "profile_b":
@@ -692,38 +850,63 @@ async def process_text_message(
         step = "exp_role"
         data["_cur_exp"] = {}
         upsert_conv(user_key, channel, chat_id, plan, step, data)
-        await send_text(f"🏢 Experiencia (hasta {PRO_MAX_EXPS}): ¿Puesto? (Ej: Vendedor)")
+        await send_text(
+            f"🏢 Experiencia (hasta {PRO_MAX_EXPS})\n\n"
+            "¿Qué *puesto* fue?\n"
+            "Ej: *Vendedor / Operario / Administrativa*"
+        )
         return
 
+    # ----------------------------
     # EXPERIENCIA
+    # ----------------------------
     if step == "exp_role":
         data["_cur_exp"] = {"role": text}
         step = "exp_company"
         upsert_conv(user_key, channel, chat_id, plan, step, data)
-        await send_text("🏢 ¿Dónde trabajaste? (empresa/negocio/particular)")
+        await send_text(
+            "🏢 ¿Dónde trabajaste?\n"
+            "Ej: *Supermercado X / Negocio familiar / Particular*"
+        )
         return
 
     if step == "exp_company":
         data["_cur_exp"]["company"] = text
         step = "exp_dates"
         upsert_conv(user_key, channel, chat_id, plan, step, data)
-        await send_text("🗓️ ¿Fechas? (Ej: 2022–2024)")
+        await send_text(
+            "🗓️ ¿Fechas?\n"
+            "Ej: *2022–2024* (o *SALTEAR*)"
+        )
         return
 
     if step == "exp_dates":
-        data["_cur_exp"]["dates"] = text
+        data["_cur_exp"]["dates"] = "" if _is_skip(text) else text
         step = "exp_bullets"
         upsert_conv(user_key, channel, chat_id, plan, step, data)
         if plan == "pro":
-            await send_text("✅ 3–5 tareas/logros (separadas por ';')\nEj: Atención al cliente; Manejo de caja; Resolución de reclamos")
+            await send_text(
+                "✅ Ahora tirame 3–5 tareas o logros.\n\n"
+                "Podés mandarlas con *;* (recomendado):\n"
+                "Ej: *Atención al cliente; Manejo de caja; Cierre de caja; Control de stock*\n\n"
+                "O una por renglón:\n"
+                "Atención al cliente\n"
+                "Manejo de caja\n"
+                "Control de stock"
+            )
         else:
-            await send_text("✅ 2–3 tareas (separadas por ';')\nEj: Atención al cliente; Caja; Reposición")
+            await send_text(
+                "✅ Ahora tirame 2–3 tareas.\n\n"
+                "Con *;* (recomendado):\n"
+                "Ej: *Atención al cliente; Caja; Reposición*\n\n"
+                "O una por renglón."
+            )
         return
 
     if step == "exp_bullets":
-        bullets = [b.strip() for b in text.split(";") if b.strip()]
+        bullets = parse_bullets(text)
         if not bullets:
-            await send_text("Mandame al menos 1 (separadas por ';').")
+            await send_text("Mandame al menos 1 tarea/logro 🙂\n(Separadas por *;* o por renglón).")
             return
 
         if plan == "pro":
@@ -745,38 +928,61 @@ async def process_text_message(
         step = "edu_degree"
         upsert_conv(user_key, channel, chat_id, plan, step, data)
         max_edu = PRO_MAX_EDU if plan == "pro" else FREE_MAX_EDU
-        await send_text(f"🎓 Educación (máx {max_edu}): ¿Qué estudiaste? (o SALTEAR)")
+        await send_text(
+            f"🎓 Educación (máx {max_edu})\n\n"
+            "¿Qué estudiaste?\n"
+            "Ej: *Secundario completo / Técnico en... / Licenciatura en...*\n"
+            "O escribí *SALTEAR*"
+        )
         return
 
     if step == "exp_more":
         if _is_yes(text):
             step = "exp_role"
             upsert_conv(user_key, channel, chat_id, plan, step, data)
-            await send_text("🏢 Ok. Siguiente experiencia: ¿Puesto?")
+            await send_text("🏢 Listo. Siguiente experiencia:\n¿Qué *puesto* fue?")
             return
         step = "edu_degree"
         upsert_conv(user_key, channel, chat_id, plan, step, data)
         max_edu = PRO_MAX_EDU if plan == "pro" else FREE_MAX_EDU
-        await send_text(f"🎓 Educación (máx {max_edu}): ¿Qué estudiaste? (o SALTEAR)")
+        await send_text(
+            f"🎓 Educación (máx {max_edu})\n\n"
+            "¿Qué estudiaste?\n"
+            "Ej: *Secundario completo / Técnico en...*\n"
+            "O escribí *SALTEAR*"
+        )
         return
 
+    # ----------------------------
     # EDUCACIÓN
+    # ----------------------------
     if step == "edu_degree":
         if _is_skip(text):
             if plan == "pro":
                 step = "certs"
                 upsert_conv(user_key, channel, chat_id, plan, step, data)
-                await send_text(f"🏅 Cursos/Certificaciones (hasta {PRO_MAX_CERTS})\nMandá 1 (o SALTEAR):")
+                await send_text(
+                    f"🏅 Cursos / Certificaciones (hasta {PRO_MAX_CERTS})\n\n"
+                    "Mandame 1 por mensaje.\n"
+                    "Ej: *Curso de Excel Avanzado (Udemy)*\n"
+                    "O escribí *SALTEAR*"
+                )
             else:
                 step = "skills"
                 upsert_conv(user_key, channel, chat_id, plan, step, data)
-                await send_text("🛠️ Habilidades (coma) o SALTEAR")
+                await send_text(
+                    "🛠️ Habilidades (separadas por coma) — o *SALTEAR*\n"
+                    "Ej: *Excel, atención al cliente, caja, reposición*"
+                )
             return
 
         data["_cur_edu"] = {"degree": text}
         step = "edu_place"
         upsert_conv(user_key, channel, chat_id, plan, step, data)
-        await send_text("🏫 Institución/Lugar (o SALTEAR)")
+        await send_text(
+            "🏫 Institución/Lugar (opcional)\n"
+            "Ej: *Escuela X / Universidad Y* — o *SALTEAR*"
+        )
         return
 
     if step == "edu_place":
@@ -785,7 +991,10 @@ async def process_text_message(
         data["_cur_edu"]["place"] = "" if _is_skip(text) else text
         step = "edu_dates"
         upsert_conv(user_key, channel, chat_id, plan, step, data)
-        await send_text("🗓️ Años/fechas (o SALTEAR)")
+        await send_text(
+            "🗓️ Años/fechas (opcional)\n"
+            "Ej: *2018–2022* — o *SALTEAR*"
+        )
         return
 
     if step == "edu_dates":
@@ -803,30 +1012,51 @@ async def process_text_message(
         if plan == "pro":
             step = "certs"
             upsert_conv(user_key, channel, chat_id, plan, step, data)
-            await send_text(f"🏅 Cursos/Certificaciones (hasta {PRO_MAX_CERTS})\nMandá 1 (o SALTEAR):")
+            await send_text(
+                f"🏅 Cursos / Certificaciones (hasta {PRO_MAX_CERTS})\n\n"
+                "Mandame 1 por mensaje.\n"
+                "Ej: *Curso de Excel Avanzado (Udemy)*\n"
+                "O escribí *SALTEAR*"
+            )
         else:
             step = "skills"
             upsert_conv(user_key, channel, chat_id, plan, step, data)
-            await send_text("🛠️ Habilidades (coma) o SALTEAR")
+            await send_text(
+                "🛠️ Habilidades (separadas por coma) — o *SALTEAR*\n"
+                "Ej: *Excel, atención al cliente, caja, reposición*"
+            )
         return
 
     if step == "edu_more":
         if _is_yes(text):
             step = "edu_degree"
             upsert_conv(user_key, channel, chat_id, plan, step, data)
-            await send_text("🎓 Siguiente educación: ¿Qué estudiaste? (o SALTEAR)")
+            await send_text(
+                "🎓 Siguiente educación:\n"
+                "¿Qué estudiaste? (o *SALTEAR*)\n"
+                "Ej: *Secundario completo / Técnico en...*"
+            )
             return
         step = "certs"
         upsert_conv(user_key, channel, chat_id, plan, step, data)
-        await send_text(f"🏅 Cursos/Certificaciones (hasta {PRO_MAX_CERTS})\nMandá 1 (o SALTEAR):")
+        await send_text(
+            f"🏅 Cursos / Certificaciones (hasta {PRO_MAX_CERTS})\n\n"
+            "Mandame 1 por mensaje.\n"
+            "O escribí *SALTEAR*"
+        )
         return
 
+    # ----------------------------
     # CERTS (PRO)
+    # ----------------------------
     if plan == "pro" and step == "certs":
         if _is_skip(text):
             step = "skills"
             upsert_conv(user_key, channel, chat_id, plan, step, data)
-            await send_text("🛠️ Habilidades (coma) o SALTEAR")
+            await send_text(
+                "🛠️ Habilidades (separadas por coma) — o *SALTEAR*\n"
+                "Ej: *Excel, atención al cliente, ventas, caja, stock*"
+            )
             return
 
         if not isinstance(data.get("certs"), list):
@@ -842,21 +1072,29 @@ async def process_text_message(
 
         step = "skills"
         upsert_conv(user_key, channel, chat_id, plan, step, data)
-        await send_text("🛠️ Habilidades (coma) o SALTEAR")
+        await send_text(
+            "🛠️ Habilidades (separadas por coma) — o *SALTEAR*\n"
+            "Ej: *Excel, atención al cliente, ventas, caja, stock*"
+        )
         return
 
     if plan == "pro" and step == "certs_more":
         if _is_yes(text) and len(data.get("certs", [])) < PRO_MAX_CERTS:
             step = "certs"
             upsert_conv(user_key, channel, chat_id, plan, step, data)
-            await send_text("🏅 Mandá otra certificación/curso (o SALTEAR):")
+            await send_text("🏅 Mandá otra certificación/curso (o *SALTEAR*):")
             return
         step = "skills"
         upsert_conv(user_key, channel, chat_id, plan, step, data)
-        await send_text("🛠️ Habilidades (coma) o SALTEAR")
+        await send_text(
+            "🛠️ Habilidades (separadas por coma) — o *SALTEAR*\n"
+            "Ej: *Excel, atención al cliente, ventas, caja, stock*"
+        )
         return
 
+    # ----------------------------
     # SKILLS + LANGS
+    # ----------------------------
     if step == "skills":
         if _is_skip(text):
             data["skills"] = []
@@ -866,7 +1104,10 @@ async def process_text_message(
 
         step = "languages"
         upsert_conv(user_key, channel, chat_id, plan, step, data)
-        await send_text("🌎 Idiomas (coma) o SALTEAR")
+        await send_text(
+            "🌎 Idiomas (separados por coma) — o *SALTEAR*\n"
+            "Ej: *Español nativo, Inglés básico*"
+        )
         return
 
     if step == "languages":
@@ -880,8 +1121,15 @@ async def process_text_message(
         if plan == "free":
             cv = {
                 "name": data["name"],
+                "dni": data.get("dni", ""),
+                "birth_year": data.get("birth_year", ""),
+                "birth_place": data.get("birth_place", ""),
+                "marital_status": data.get("marital_status", ""),
+                "address": data.get("address", ""),
+
                 "city": data["city"],
                 "contact": data["contact"],
+
                 "title": data["title"],
                 "profile": data.get("profile") or profile_free(data),
                 "experiences": data["experiences"][:FREE_MAX_EXPS],
@@ -891,9 +1139,17 @@ async def process_text_message(
             }
             pdf = build_pdf_bytes(cv, pro=False)
             filename = f"CV_FREE_{data['name'].replace(' ', '_')}.pdf"
-            await send_pdf(pdf, filename, "🆓 Listo. Acá tenés tu CV GRATIS.")
+            await send_pdf(pdf, filename, "🆓 Listo, compa. Acá tenés tu CV GRATIS 📄")
             upsert_conv(user_key, channel, chat_id, plan="none", step="choose_plan", data=default_data())
-            await send_text(f"Si querés PRO (foto + diseño premium + más secciones): escribí PRO.\n💎 Valor: ARS {PRO_PRICE_ARS}")
+
+            await send_text(
+                "😄 Si querés que quede *mucho más cheto/pro*, el **CV PRO** suma:\n"
+                "✅ Foto (opcional) + diseño más lindo\n"
+                "✅ Redacción más profesional (ATS-friendly)\n"
+                "✅ Más experiencias/educación + cursos\n\n"
+                f"💎 Sale **$ {PRO_PRICE_ARS} pesos**\n"
+                "Si querés mejorarlo, escribí *PRO* y lo hacemos al toque."
+            )
             return
 
         # PRO: crear pago
@@ -901,7 +1157,7 @@ async def process_text_message(
             pref = await asyncio.to_thread(mp_create_preference, user_key)
         except Exception as e:
             print("mp_create_preference error:", repr(e))
-            await send_text("❌ No pude generar el link de pago. Probá de nuevo escribiendo CV.")
+            await send_text("❌ Uy, no pude generar el link de pago. Probá de nuevo escribiendo *CV*.")
             upsert_conv(user_key, channel, chat_id, plan="none", step="choose_plan", data=default_data())
             return
 
@@ -918,14 +1174,14 @@ async def process_text_message(
         upsert_conv(user_key, channel, chat_id, plan, step, data)
 
         msg = (
-            "💎 CV PRO listo para generar\n\n"
-            f"Valor: ARS {PRO_PRICE_ARS}\n"
-            "Pagá en este link y cuando se acredite te mando el PDF automáticamente:\n"
+            "💎 *CV PRO* listo para generar 😎\n\n"
+            f"💰 Valor: *$ {PRO_PRICE_ARS} pesos*\n\n"
+            "Pagá en este link y cuando se acredite te mando el PDF automático:\n"
             f"{init_point}\n\n"
-            "⏳ Quedate en este chat. Apenas Mercado Pago confirme el pago, te llega el PDF."
+            "⏳ Quedate en este chat. Apenas Mercado Pago confirme el pago, te llega el CV."
         )
         if ENABLE_TEST_PAYMENTS:
-            msg += "\n\n🧪 Modo test activo: escribí TEST para simular pago aprobado."
+            msg += "\n\n🧪 Modo test activo: escribí *TEST* para simular pago aprobado."
         await send_text(msg)
         return
 
@@ -933,9 +1189,16 @@ async def process_text_message(
         if ENABLE_TEST_PAYMENTS and text.strip().lower() in ("test", "aprobar", "approve"):
             cv = {
                 "name": data["name"],
+                "dni": data.get("dni", ""),
+                "birth_year": data.get("birth_year", ""),
+                "birth_place": data.get("birth_place", ""),
+                "marital_status": data.get("marital_status", ""),
+                "address": data.get("address", ""),
+
                 "city": data["city"],
                 "contact": data["contact"],
                 "linkedin": data.get("linkedin", ""),
+
                 "title": data["title"],
                 "profile": data.get("profile") or profile_pro(data),
                 "photo_b64": data.get("photo_b64", ""),
@@ -947,16 +1210,16 @@ async def process_text_message(
             }
             pdf = build_pdf_bytes(cv, pro=True)
             filename = f"CV_PRO_{data['name'].replace(' ', '_')}.pdf"
-            await send_text("✅ TEST: pago simulado como aprobado. Te envío tu CV PRO 😎")
+            await send_text("✅ TEST: pago simulado aprobado. Te mando tu CV PRO 😎")
             await send_pdf(pdf, filename, "")
             upsert_conv(user_key, channel, chat_id, plan="none", step="choose_plan", data=default_data())
-            await send_text("Si querés hacer otro: escribí CV")
+            await send_text("Si querés hacer otro, escribí *CV*.")
             return
 
-        await send_text("⏳ Estoy esperando la confirmación del pago. Si ya pagaste, en breve te llega.")
+        await send_text("⏳ Estoy esperando la confirmación del pago. Si ya pagaste, en breve te llega 🙂")
         return
 
-    await send_text("Escribí CV para empezar de nuevo.")
+    await send_text("Escribí *CV* para empezar de nuevo.")
 
 
 # ----------------------------
@@ -1047,7 +1310,12 @@ async def tg_handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     step = "title"
     upsert_conv(user_key, "telegram", chat_id, plan, step, data)
-    await update.effective_message.reply_text("✅ Foto guardada.\n🎯 ¿A qué te dedicás / qué trabajo buscás? (Ej: Electricista)")
+    await update.effective_message.reply_text(
+        "✅ Foto guardada.\n\n"
+        "🎯 ¿A qué te dedicás / qué trabajo buscás?\n"
+        "Ej: *Electricista / Vendedor / Administrativa*",
+        disable_web_page_preview=True
+    )
 
 
 def tg_register_handlers():
@@ -1241,13 +1509,17 @@ async def whatsapp_webhook(request: Request):
                 img_bytes = await asyncio.to_thread(wa_download_media, content)
                 data["photo_b64"] = base64.b64encode(img_bytes).decode("utf-8")
                 upsert_conv(user_key, "whatsapp", chat_id, plan, "title", data)
-                await send_text("✅ Foto guardada.\n🎯 ¿A qué te dedicás / qué trabajo buscás? (Ej: Electricista)")
+                await send_text(
+                    "✅ Foto guardada.\n\n"
+                    "🎯 ¿A qué te dedicás / qué trabajo buscás?\n"
+                    "Ej: *Electricista / Vendedor / Administrativa*"
+                )
             except Exception as e:
                 print("wa photo save error:", repr(e))
                 await send_text("❌ No pude guardar la foto. Probá mandarla de nuevo.")
             return {"ok": True}
 
-        await send_text("📸 Recibí tu imagen. Si querés usarla como foto de CV, primero elegí PRO y seguí el flujo.")
+        await send_text("📸 Recibí tu imagen. Si querés usarla en el CV, primero elegí *PRO* y seguí el flujo.")
         return {"ok": True}
 
     # Texto normal
@@ -1262,7 +1534,7 @@ async def whatsapp_webhook(request: Request):
         return {"ok": True}
 
     # otros tipos
-    await send_text("Por ahora solo entiendo texto (y foto en PRO). Escribí CV para empezar.")
+    await send_text("Por ahora solo entiendo texto (y foto en PRO). Escribí *CV* para empezar.")
     return {"ok": True}
 
 
@@ -1314,9 +1586,16 @@ async def mp_webhook(request: Request):
 
     cv = {
         "name": data["name"],
+        "dni": data.get("dni", ""),
+        "birth_year": data.get("birth_year", ""),
+        "birth_place": data.get("birth_place", ""),
+        "marital_status": data.get("marital_status", ""),
+        "address": data.get("address", ""),
+
         "city": data["city"],
         "contact": data["contact"],
         "linkedin": data.get("linkedin", ""),
+
         "title": data["title"],
         "profile": data.get("profile") or profile_pro(data),
         "photo_b64": data.get("photo_b64", ""),
