@@ -9,7 +9,7 @@ from datetime import datetime
 from html import escape
 
 import requests
-from fastapi import FastAPI, Request, HTTPException, Response
+from fastapi import FastAPI, Request, HTTPException
 
 from telegram import Update, InputFile
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
@@ -27,7 +27,7 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Tabl
 # ----------------------------
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_WEBHOOK_SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip()
-PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")  # FIX: evita //
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").strip()
 
 ENABLE_TEST_PAYMENTS = os.getenv("ENABLE_TEST_PAYMENTS", "0").strip() == "1"
 
@@ -1339,10 +1339,9 @@ async def root():
     return {"ok": True, "message": "CVBot online"}
 
 
-# FIX: /health acepta HEAD (evita 405 y reinicios por checks)
-@api.api_route("/health", methods=["GET", "HEAD"])
+@api.get("/health")
 async def health():
-    return Response(status_code=200)
+    return {"ok": True}
 
 
 @api.get("/ok")
@@ -1388,15 +1387,9 @@ async def telegram_webhook(secret: str, request: Request):
     return {"ok": True}
 
 
-# ----------------------------
-# WhatsApp webhook verify (GET) - FIX: texto plano + HEAD ok
-# ----------------------------
-@api.api_route("/whatsapp/webhook", methods=["GET", "HEAD"])
+# WhatsApp webhook verify
+@api.get("/whatsapp/webhook")
 async def whatsapp_webhook_verify(request: Request):
-    # HEAD para monitores / checks
-    if request.method == "HEAD":
-        return Response(status_code=200)
-
     qp = request.query_params
     hub_mode = qp.get("hub.mode", "")
     hub_challenge = qp.get("hub.challenge", "")
@@ -1405,16 +1398,14 @@ async def whatsapp_webhook_verify(request: Request):
     if not WHATSAPP_VERIFY_TOKEN:
         raise HTTPException(status_code=500, detail="WHATSAPP_VERIFY_TOKEN no configurado")
 
-    if hub_mode == "subscribe" and hub_verify_token == WHATSAPP_VERIFY_TOKEN and hub_challenge:
-        # Meta exige texto plano
-        return Response(content=str(hub_challenge), media_type="text/plain", status_code=200)
-
+    if hub_mode == "subscribe" and hub_verify_token == WHATSAPP_VERIFY_TOKEN:
+        return int(hub_challenge)
     raise HTTPException(status_code=403, detail="Forbidden")
 
 
 def _wa_extract(payload: dict):
     """
-    Devuelve (from_number, text_or_media_id, msg_type) o (None, None, None)
+    Devuelve (from_number, text, msg_type) o (None, None, None)
     Ignora statuses.
     """
     try:
@@ -1437,6 +1428,7 @@ def _wa_extract(payload: dict):
             text = ((m0.get("text") or {}).get("body") or "").strip()
             return from_number, text, "text"
 
+        # foto (para PRO) - WhatsApp manda type=image + image.id
         if mtype == "image":
             image_id = ((m0.get("image") or {}).get("id") or "").strip()
             return from_number, image_id, "image"
@@ -1454,6 +1446,7 @@ def wa_download_media(media_id: str) -> bytes:
     if not WHATSAPP_TOKEN:
         raise RuntimeError("Falta WHATSAPP_TOKEN")
 
+    # 1
     url1 = f"https://graph.facebook.com/v22.0/{media_id}"
     h = {"Authorization": f"Bearer {WHATSAPP_TOKEN}"}
     r1 = requests.get(url1, headers=h, timeout=30)
@@ -1464,19 +1457,20 @@ def wa_download_media(media_id: str) -> bytes:
     if not dl_url:
         raise RuntimeError(f"WA media meta sin url: {j}")
 
+    # 2
     r2 = requests.get(dl_url, headers=h, timeout=60)
     if r2.status_code != 200:
         raise RuntimeError(f"WA media download error {r2.status_code}: {r2.text}")
     return r2.content
 
 
-async def _handle_whatsapp_update(payload: dict):
-    """
-    FIX: procesar en background para que el POST responda rápido.
-    """
+@api.post("/whatsapp/webhook")
+async def whatsapp_webhook(request: Request):
+    payload = await request.json()
+
     from_number, content, msg_type = _wa_extract(payload)
     if not from_number:
-        return
+        return {"ok": True}
 
     user_key = f"wa:{from_number}"
     chat_id = from_number
@@ -1496,7 +1490,7 @@ async def _handle_whatsapp_update(payload: dict):
     # Atajo de test
     if msg_type == "text" and (content or "").strip().lower() == "ping":
         await send_text("pong ✅ (WhatsApp OK)")
-        return
+        return {"ok": True}
 
     # Manejo foto para PRO (photo_wait)
     if msg_type == "image":
@@ -1504,7 +1498,7 @@ async def _handle_whatsapp_update(payload: dict):
         if not conv:
             upsert_conv(user_key, "whatsapp", chat_id, plan="none", step="choose_plan", data=default_data())
             await send_text(WELCOME_TEXT)
-            return
+            return {"ok": True}
 
         plan = conv["plan"]
         step = conv["step"]
@@ -1523,10 +1517,10 @@ async def _handle_whatsapp_update(payload: dict):
             except Exception as e:
                 print("wa photo save error:", repr(e))
                 await send_text("❌ No pude guardar la foto. Probá mandarla de nuevo.")
-            return
+            return {"ok": True}
 
         await send_text("📸 Recibí tu imagen. Si querés usarla en el CV, primero elegí *PRO* y seguí el flujo.")
-        return
+        return {"ok": True}
 
     # Texto normal
     if msg_type == "text":
@@ -1534,20 +1528,13 @@ async def _handle_whatsapp_update(payload: dict):
         if txt.strip().lower() == "cv":
             upsert_conv(user_key, "whatsapp", chat_id, plan="none", step="choose_plan", data=default_data())
             await send_text(WELCOME_TEXT)
-            return
+            return {"ok": True}
 
         await process_text_message(user_key, "whatsapp", chat_id, txt, send_text, send_pdf)
-        return
+        return {"ok": True}
 
+    # otros tipos
     await send_text("Por ahora solo entiendo texto (y foto en PRO). Escribí *CV* para empezar.")
-
-
-# WhatsApp webhook POST - FIX: responder YA
-@api.post("/whatsapp/webhook")
-async def whatsapp_webhook(request: Request):
-    payload = await request.json()
-    # devolver rápido y procesar aparte
-    asyncio.create_task(_handle_whatsapp_update(payload))
     return {"ok": True}
 
 
