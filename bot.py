@@ -1,3 +1,4 @@
+# bot.py
 import os
 import json
 import sqlite3
@@ -312,6 +313,11 @@ MUTED = colors.HexColor("#4B5563")
 
 
 def build_pdf_bytes(cv: dict, pro: bool) -> BytesIO:
+    """
+    CAMBIOS PEDIDOS:
+    - "DATOS PERSONALES" ahora va ARRIBA de "PERFIL"
+    - Bullets (tareas/logros y certs) salen como lista (1 por renglón) para que no queden pegados.
+    """
     buf = BytesIO()
     doc = SimpleDocTemplate(
         buf,
@@ -326,24 +332,84 @@ def build_pdf_bytes(cv: dict, pro: bool) -> BytesIO:
 
     styles = getSampleStyleSheet()
 
-    s_name = ParagraphStyle("name", parent=styles["Normal"], fontName="Helvetica-Bold",
-                            fontSize=23 if pro else 20, leading=27, textColor=TEXT, spaceAfter=2)
-    s_title = ParagraphStyle("title", parent=styles["Normal"],
-                             fontName="Helvetica-Bold" if pro else "Helvetica",
-                             fontSize=11.5, leading=14, textColor=ACCENT, spaceAfter=6)
-    s_contact = ParagraphStyle("contact", parent=styles["Normal"], fontName="Helvetica",
-                               fontSize=9.8, leading=12.5, textColor=MUTED, spaceAfter=10)
+    s_name = ParagraphStyle(
+        "name",
+        parent=styles["Normal"],
+        fontName="Helvetica-Bold",
+        fontSize=23 if pro else 20,
+        leading=27,
+        textColor=TEXT,
+        spaceAfter=2,
+    )
+    s_title = ParagraphStyle(
+        "title",
+        parent=styles["Normal"],
+        fontName="Helvetica-Bold" if pro else "Helvetica",
+        fontSize=11.5,
+        leading=14,
+        textColor=ACCENT,
+        spaceAfter=6,
+    )
+    s_contact = ParagraphStyle(
+        "contact",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=9.8,
+        leading=12.5,
+        textColor=MUTED,
+        spaceAfter=10,
+    )
 
-    s_section = ParagraphStyle("section", parent=styles["Normal"], fontName="Helvetica-Bold",
-                               fontSize=10.6, leading=13, textColor=ACCENT, spaceBefore=10, spaceAfter=6)
-    s_body = ParagraphStyle("body", parent=styles["Normal"], fontName="Helvetica",
-                            fontSize=10.3, leading=14.2, textColor=TEXT, spaceAfter=6)
-    s_meta = ParagraphStyle("meta", parent=styles["Normal"], fontName="Helvetica",
-                            fontSize=9.2, leading=11.8, textColor=MUTED, spaceAfter=3)
-    s_bul = ParagraphStyle("bul", parent=styles["Normal"], fontName="Helvetica",
-                           fontSize=9.8, leading=13.0, textColor=TEXT, leftIndent=14, spaceAfter=6)
-    s_skill = ParagraphStyle("skill", parent=styles["Normal"], fontName="Helvetica",
-                             fontSize=10.0, leading=13.0, textColor=TEXT, spaceAfter=2)
+    s_section = ParagraphStyle(
+        "section",
+        parent=styles["Normal"],
+        fontName="Helvetica-Bold",
+        fontSize=10.6,
+        leading=13,
+        textColor=ACCENT,
+        spaceBefore=10,
+        spaceAfter=6,
+    )
+    s_body = ParagraphStyle(
+        "body",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=10.3,
+        leading=14.2,
+        textColor=TEXT,
+        spaceAfter=6,
+    )
+    s_meta = ParagraphStyle(
+        "meta",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=9.2,
+        leading=11.8,
+        textColor=MUTED,
+        spaceAfter=3,
+    )
+
+    # Lista: 1 por renglón
+    s_list_item = ParagraphStyle(
+        "list_item",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=9.8,
+        leading=13.0,
+        textColor=TEXT,
+        leftIndent=12,
+        spaceAfter=2,
+    )
+
+    s_skill = ParagraphStyle(
+        "skill",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=10.0,
+        leading=13.0,
+        textColor=TEXT,
+        spaceAfter=2,
+    )
 
     story = []
 
@@ -399,12 +465,9 @@ def build_pdf_bytes(cv: dict, pro: bool) -> BytesIO:
                        style=TableStyle([("BACKGROUND", (0, 0), (-1, -1), ACCENT)])))
     story.append(Spacer(1, 10))
 
-    # PERFIL
-    if profile:
-        story.append(Paragraph("PERFIL", s_section))
-        story.append(Paragraph(html_msg(profile), s_body))
-
-    # DATOS PERSONALES (más completo)
+    # =========================================================
+    # DATOS PERSONALES (AHORA VA ANTES DE PERFIL)
+    # =========================================================
     dp = []
     if _clean(cv.get("dni", "")):
         dp.append(f"DNI: {_clean(cv.get('dni'))}")
@@ -419,7 +482,13 @@ def build_pdf_bytes(cv: dict, pro: bool) -> BytesIO:
 
     if dp:
         story.append(Paragraph("DATOS PERSONALES", s_section))
+        # línea corta, prolija
         story.append(Paragraph(html_msg(" • ".join(dp)), s_body))
+
+    # PERFIL (DESPUÉS DE DATOS PERSONALES)
+    if profile:
+        story.append(Paragraph("PERFIL", s_section))
+        story.append(Paragraph(html_msg(profile), s_body))
 
     # EXPERIENCIA
     exps = cv.get("experiences", []) or []
@@ -441,8 +510,9 @@ def build_pdf_bytes(cv: dict, pro: bool) -> BytesIO:
 
             bullets = [b for b in (exp.get("bullets", []) or []) if _clean(b)]
             if bullets:
-                li = "".join([f"<li>{html_msg(b)}</li>" for b in bullets])
-                story.append(Paragraph(f"<ul>{li}</ul>", s_bul))
+                # LISTA: 1 por renglón (evita que se peguen)
+                for b in bullets:
+                    story.append(Paragraph(f"• {html_msg(_clean(b))}", s_list_item))
 
             story.append(Spacer(1, 4))
 
@@ -468,8 +538,9 @@ def build_pdf_bytes(cv: dict, pro: bool) -> BytesIO:
     certs = [c for c in certs if _clean(c)]
     if pro and certs:
         story.append(Paragraph("CURSOS / CERTIFICACIONES", s_section))
-        li = "".join([f"<li>{html_msg(x)}</li>" for x in certs[:8]])
-        story.append(Paragraph(f"<ul>{li}</ul>", s_bul))
+        # LISTA: 1 por renglón
+        for c in certs[:8]:
+            story.append(Paragraph(f"• {html_msg(_clean(c))}", s_list_item))
 
     # SKILLS
     skills = [s for s in (cv.get("skills", []) or []) if _clean(s)]
