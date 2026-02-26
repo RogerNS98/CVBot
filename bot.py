@@ -482,7 +482,6 @@ def build_pdf_bytes(cv: dict, pro: bool) -> BytesIO:
 
     if dp:
         story.append(Paragraph("DATOS PERSONALES", s_section))
-        # línea corta, prolija
         story.append(Paragraph(html_msg(" • ".join(dp)), s_body))
 
     # PERFIL (DESPUÉS DE DATOS PERSONALES)
@@ -510,7 +509,6 @@ def build_pdf_bytes(cv: dict, pro: bool) -> BytesIO:
 
             bullets = [b for b in (exp.get("bullets", []) or []) if _clean(b)]
             if bullets:
-                # LISTA: 1 por renglón (evita que se peguen)
                 for b in bullets:
                     story.append(Paragraph(f"• {html_msg(_clean(b))}", s_list_item))
 
@@ -538,7 +536,6 @@ def build_pdf_bytes(cv: dict, pro: bool) -> BytesIO:
     certs = [c for c in certs if _clean(c)]
     if pro and certs:
         story.append(Paragraph("CURSOS / CERTIFICACIONES", s_section))
-        # LISTA: 1 por renglón
         for c in certs[:8]:
             story.append(Paragraph(f"• {html_msg(_clean(c))}", s_list_item))
 
@@ -641,18 +638,20 @@ def wa_send_pdf(to: str, pdf_bytes: bytes, filename: str, caption: str = "") -> 
 # ----------------------------
 WELCOME_TEXT = (
     "👋 ¡Buenas! Soy *CVBot* 😄\n"
-    "Te armo tu currículum en minutos, listo para mandar por WhatsApp/Telegram.\n\n"
+    "Te ayudo a armar tu currículum respondiendo preguntas simples.\n"
+    "Al final te envío un *PDF prolijo*, listo para *mandar o imprimir*.\n\n"
+    "🔒 *Privacidad:* tus datos se usan únicamente para generar tu CV y *no se comparten con terceros*.\n\n"
     "📌 ¿Cómo funciona?\n"
-    "1) Te hago unas preguntas cortitas\n"
-    "2) Con eso te genero un PDF prolijo\n"
-    "3) Si elegís PRO, pagás y te lo mando automático 💸📄\n\n"
+    "1) Te hago preguntas claras (tardás aprox. *3–5 minutos*)\n"
+    "2) Con tus respuestas genero el PDF y te lo envío por este chat\n"
+    f"3) Si elegís *PRO* (solo *$ {PRO_PRICE_ARS}*), te queda más completo y más lindo 😎\n\n"
     "🆓 *CV GRATIS*\n"
     "• Simple y prolijo (ideal para salir del paso)\n"
     "• Sin foto\n"
     f"• Hasta {FREE_MAX_EXPS} experiencia + {FREE_MAX_EDU} educación\n\n"
     f"💎 *CV PRO* – *$ {PRO_PRICE_ARS} pesos*\n"
-    "• Con foto (opcional) + diseño más lindo\n"
-    "• Texto más profesional (ATS-friendly)\n"
+    "• Foto opcional + diseño premium\n"
+    "• Redacción más profesional (ATS-friendly)\n"
     f"• Hasta {PRO_MAX_EXPS} experiencias + {PRO_MAX_EDU} educaciones\n"
     f"• Cursos/certificaciones (hasta {PRO_MAX_CERTS})\n\n"
     "👉 Escribime una opción para arrancar:\n"
@@ -725,7 +724,7 @@ async def process_text_message(
             upsert_conv(user_key, channel, chat_id, plan, step, data)
             await send_text(
                 "🆓 Dale, vamos con *GRATIS* 🙌\n\n"
-                "Arrancamos tranqui. Primero:\n"
+                "Primero:\n"
                 "👤 Pasame tu *Nombre y Apellido*\n"
                 "Ej: *Juan Pérez*"
             )
@@ -736,7 +735,7 @@ async def process_text_message(
             upsert_conv(user_key, channel, chat_id, plan, step, data)
             await send_text(
                 "💎 De una, vamos con *PRO* 😎\n\n"
-                "Arrancamos. Primero:\n"
+                "Primero:\n"
                 "👤 Pasame tu *Nombre y Apellido*\n"
                 "Ej: *Juan Pérez*"
             )
@@ -832,8 +831,8 @@ async def process_text_message(
             )
         else:
             await send_text(
-                "🎯 ¿Qué puesto buscás o a qué te dedicás?\n"
-                "Ej: *Repositor / Atención al cliente / Operario / Administrativa*"
+                "🎯 ¿A qué te dedicás o qué puesto buscás?\n"
+                "Ej: *Cajero/a, Repositor/a, Atención al cliente, Operario/a, Administrativa*"
             )
         return
 
@@ -842,7 +841,7 @@ async def process_text_message(
         step = "photo_wait"
         upsert_conv(user_key, channel, chat_id, plan, step, data)
         await send_text(
-            "📸 Ahora mandame tu *FOTO* (opcional pero re suma).\n"
+            "📸 Ahora mandame tu *FOTO* (opcional pero suma).\n"
             "Tip: fondo claro, sin filtros, tipo carnet.\n\n"
             "Si no querés poner foto, escribí *SALTEAR*."
         )
@@ -857,7 +856,7 @@ async def process_text_message(
             await send_text(
                 "✅ Listo, sin foto.\n\n"
                 "🎯 ¿A qué te dedicás / qué trabajo buscás?\n"
-                "Ej: *Electricista / Vendedor / Administrativa*"
+                "Ej: *Electricista, Vendedor/a, Administrativa, Operario/a*"
             )
             return
         await send_text("📸 Estoy esperando tu foto 🙂\nSi querés saltear, escribí *SALTEAR*.")
@@ -873,13 +872,13 @@ async def process_text_message(
 
         if plan == "pro":
             await send_text(
-                "🧠 ¿En qué tenés experiencia? (1–2 cosas)\n"
-                "Ej: *ventas, atención al cliente*"
+                "🧠 ¿En qué tenés experiencia? (1–2 cosas concretas)\n"
+                "Ej: *ventas, atención al cliente* / *administración, facturación* / *cocina, producción*"
             )
         else:
             await send_text(
-                "🧠 Decime *1 cosa* en la que sos bueno/a (así lo redacto lindo)\n"
-                "Ej: *atención al cliente*"
+                "🧠 ¿En qué tenés experiencia o qué tareas hacés bien? (1–2 cosas concretas)\n"
+                "Ej: *atención al cliente, caja* / *reposición, stock* / *limpieza, cocina* / *manejo de Excel*"
             )
         return
 
@@ -900,7 +899,7 @@ async def process_text_message(
             await send_text(
                 f"🏢 Experiencia (máx {FREE_MAX_EXPS})\n\n"
                 "¿Qué *puesto* fue?\n"
-                "Ej: *Vendedor / Repositor / Cajero*"
+                "Ej: *Cajero/a, Vendedor/a, Repositor/a, Operario/a*"
             )
         return
 
@@ -924,7 +923,7 @@ async def process_text_message(
         await send_text(
             f"🏢 Experiencia (hasta {PRO_MAX_EXPS})\n\n"
             "¿Qué *puesto* fue?\n"
-            "Ej: *Vendedor / Operario / Administrativa*"
+            "Ej: *Vendedor/a, Operario/a, Administrativa, Atención al cliente*"
         )
         return
 
@@ -937,7 +936,7 @@ async def process_text_message(
         upsert_conv(user_key, channel, chat_id, plan, step, data)
         await send_text(
             "🏢 ¿Dónde trabajaste?\n"
-            "Ej: *Supermercado X / Negocio familiar / Particular*"
+            "Ej: *Supermercado X / Negocio familiar / Particular / Empresa Y*"
         )
         return
 
@@ -955,21 +954,21 @@ async def process_text_message(
         data["_cur_exp"]["dates"] = "" if _is_skip(text) else text
         step = "exp_bullets"
         upsert_conv(user_key, channel, chat_id, plan, step, data)
+
         if plan == "pro":
             await send_text(
-                "✅ Ahora tirame 3–5 tareas o logros.\n\n"
-                "Podés mandarlas con *;* (recomendado):\n"
-                "Ej: *Atención al cliente; Manejo de caja; Cierre de caja; Control de stock*\n\n"
-                "O una por renglón:\n"
-                "Atención al cliente\n"
-                "Manejo de caja\n"
-                "Control de stock"
+                "✅ Escribí *3–5 tareas o logros concretos* de ese trabajo.\n"
+                "Tip: evitá repetir el puesto (ej: no pongas “cajero”).\n\n"
+                "Separalas con *;* (recomendado):\n"
+                "Ej: *Atención al cliente; Manejo de caja/posnet; Cierre de caja; Control de stock*\n\n"
+                "O una por renglón."
             )
         else:
             await send_text(
-                "✅ Ahora tirame 2–3 tareas.\n\n"
-                "Con *;* (recomendado):\n"
-                "Ej: *Atención al cliente; Caja; Reposición*\n\n"
+                "✅ Contame *2–3 tareas concretas* que hacías en ese trabajo.\n"
+                "Tip: evitá repetir el puesto (ej: no pongas “cajero”).\n\n"
+                "Separalas con *;* (recomendado):\n"
+                "Ej para cajero/a: *Cobro en caja; Manejo de efectivo y posnet; Arqueo/cierre de caja*\n\n"
                 "O una por renglón."
             )
         return
@@ -1002,7 +1001,7 @@ async def process_text_message(
         await send_text(
             f"🎓 Educación (máx {max_edu})\n\n"
             "¿Qué estudiaste?\n"
-            "Ej: *Secundario completo / Técnico en... / Licenciatura en...*\n"
+            "Ej: *Secundario completo / Técnico en... / Curso de...*\n"
             "O escribí *SALTEAR*"
         )
         return
@@ -1043,7 +1042,7 @@ async def process_text_message(
                 upsert_conv(user_key, channel, chat_id, plan, step, data)
                 await send_text(
                     "🛠️ Habilidades (separadas por coma) — o *SALTEAR*\n"
-                    "Ej: *Excel, atención al cliente, caja, reposición*"
+                    "Ej: *caja, posnet, atención al cliente, reposición, inventario, Excel, facturación*"
                 )
             return
 
@@ -1052,7 +1051,7 @@ async def process_text_message(
         upsert_conv(user_key, channel, chat_id, plan, step, data)
         await send_text(
             "🏫 Institución/Lugar (opcional)\n"
-            "Ej: *Escuela X / Universidad Y* — o *SALTEAR*"
+            "Ej: *Escuela X / Universidad Y / Instituto Z* — o *SALTEAR*"
         )
         return
 
@@ -1094,7 +1093,7 @@ async def process_text_message(
             upsert_conv(user_key, channel, chat_id, plan, step, data)
             await send_text(
                 "🛠️ Habilidades (separadas por coma) — o *SALTEAR*\n"
-                "Ej: *Excel, atención al cliente, caja, reposición*"
+                "Ej: *caja, posnet, atención al cliente, reposición, inventario, Excel, facturación*"
             )
         return
 
@@ -1126,7 +1125,7 @@ async def process_text_message(
             upsert_conv(user_key, channel, chat_id, plan, step, data)
             await send_text(
                 "🛠️ Habilidades (separadas por coma) — o *SALTEAR*\n"
-                "Ej: *Excel, atención al cliente, ventas, caja, stock*"
+                "Ej: *caja, posnet, ventas, stock, inventario, Excel, facturación, atención al cliente*"
             )
             return
 
@@ -1145,7 +1144,7 @@ async def process_text_message(
         upsert_conv(user_key, channel, chat_id, plan, step, data)
         await send_text(
             "🛠️ Habilidades (separadas por coma) — o *SALTEAR*\n"
-            "Ej: *Excel, atención al cliente, ventas, caja, stock*"
+            "Ej: *caja, posnet, ventas, stock, inventario, Excel, facturación, atención al cliente*"
         )
         return
 
@@ -1159,7 +1158,7 @@ async def process_text_message(
         upsert_conv(user_key, channel, chat_id, plan, step, data)
         await send_text(
             "🛠️ Habilidades (separadas por coma) — o *SALTEAR*\n"
-            "Ej: *Excel, atención al cliente, ventas, caja, stock*"
+            "Ej: *caja, posnet, ventas, stock, inventario, Excel, facturación, atención al cliente*"
         )
         return
 
@@ -1210,12 +1209,12 @@ async def process_text_message(
             }
             pdf = build_pdf_bytes(cv, pro=False)
             filename = f"CV_FREE_{data['name'].replace(' ', '_')}.pdf"
-            await send_pdf(pdf, filename, "🆓 Listo, compa. Acá tenés tu CV GRATIS 📄")
+            await send_pdf(pdf, filename, "🆓 Listo 🙌 Acá tenés tu CV GRATIS 📄")
             upsert_conv(user_key, channel, chat_id, plan="none", step="choose_plan", data=default_data())
 
             await send_text(
-                "😄 Si querés que quede *mucho más cheto/pro*, el **CV PRO** suma:\n"
-                "✅ Foto (opcional) + diseño más lindo\n"
+                "😄 Si querés que quede *más completo y más profesional*, el **CV PRO** suma:\n"
+                "✅ Foto opcional + diseño premium\n"
                 "✅ Redacción más profesional (ATS-friendly)\n"
                 "✅ Más experiencias/educación + cursos\n\n"
                 f"💎 Sale **$ {PRO_PRICE_ARS} pesos**\n"
@@ -1384,7 +1383,7 @@ async def tg_handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(
         "✅ Foto guardada.\n\n"
         "🎯 ¿A qué te dedicás / qué trabajo buscás?\n"
-        "Ej: *Electricista / Vendedor / Administrativa*",
+        "Ej: *Electricista, Vendedor/a, Administrativa, Operario/a*",
         disable_web_page_preview=True
     )
 
@@ -1583,7 +1582,7 @@ async def whatsapp_webhook(request: Request):
                 await send_text(
                     "✅ Foto guardada.\n\n"
                     "🎯 ¿A qué te dedicás / qué trabajo buscás?\n"
-                    "Ej: *Electricista / Vendedor / Administrativa*"
+                    "Ej: *Electricista, Vendedor/a, Administrativa, Operario/a*"
                 )
             except Exception as e:
                 print("wa photo save error:", repr(e))
