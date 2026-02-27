@@ -30,8 +30,6 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_WEBHOOK_SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip()
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").strip()
 
-ENABLE_TEST_PAYMENTS = os.getenv("ENABLE_TEST_PAYMENTS", "0").strip() == "1"
-
 MP_ACCESS_TOKEN = os.getenv("MP_ACCESS_TOKEN", "").strip()
 MP_WEBHOOK_SECRET = os.getenv("MP_WEBHOOK_SECRET", "").strip()  # opcional (no usado acá)
 PRO_PRICE_ARS = int(os.getenv("PRO_PRICE_ARS", "1500"))
@@ -1250,42 +1248,10 @@ async def process_text_message(
             f"{init_point}\n\n"
             "⏳ Quedate en este chat. Apenas Mercado Pago confirme el pago, te llega el CV."
         )
-        if ENABLE_TEST_PAYMENTS:
-            msg += "\n\n🧪 Modo test activo: escribí *TEST* para simular pago aprobado."
         await send_text(msg)
         return
 
     if step == "waiting_payment":
-        if ENABLE_TEST_PAYMENTS and text.strip().lower() in ("test", "aprobar", "approve"):
-            cv = {
-                "name": data["name"],
-                "dni": data.get("dni", ""),
-                "birth_year": data.get("birth_year", ""),
-                "birth_place": data.get("birth_place", ""),
-                "marital_status": data.get("marital_status", ""),
-                "address": data.get("address", ""),
-
-                "city": data["city"],
-                "contact": data["contact"],
-                "linkedin": data.get("linkedin", ""),
-
-                "title": data["title"],
-                "profile": data.get("profile") or profile_pro(data),
-                "photo_b64": data.get("photo_b64", ""),
-                "experiences": (data.get("experiences") or [])[:PRO_MAX_EXPS],
-                "education": (data.get("education") or [])[:PRO_MAX_EDU],
-                "certs": (data.get("certs") or [])[:PRO_MAX_CERTS],
-                "skills": (data.get("skills") or [])[:PRO_MAX_SKILLS],
-                "languages": (data.get("languages") or [])[:PRO_MAX_LANGS],
-            }
-            pdf = build_pdf_bytes(cv, pro=True)
-            filename = f"CV_PRO_{data['name'].replace(' ', '_')}.pdf"
-            await send_text("✅ TEST: pago simulado aprobado. Te mando tu CV PRO 😎")
-            await send_pdf(pdf, filename, "")
-            upsert_conv(user_key, channel, chat_id, plan="none", step="choose_plan", data=default_data())
-            await send_text("Si querés hacer otro, escribí *CV*.")
-            return
-
         await send_text("⏳ Estoy esperando la confirmación del pago. Si ya pagaste, en breve te llega 🙂")
         return
 
@@ -1557,7 +1523,7 @@ async def whatsapp_webhook(request: Request):
         except Exception as e:
             print("wa_send_pdf error:", repr(e))
 
-    # Atajo de test
+    # Atajo de test de conectividad WhatsApp
     if msg_type == "text" and (content or "").strip().lower() == "ping":
         await send_text("pong ✅ (WhatsApp OK)")
         return {"ok": True}
